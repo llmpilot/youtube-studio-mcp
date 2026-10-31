@@ -610,13 +610,21 @@ class McpServer:
             )
         raise RuntimeError(f"Unknown tool: {name}")
 
-    @staticmethod
-    def _read_message() -> dict[str, Any] | None:
+    # "ndjson" (MCP stdio standard: one JSON object per line) or "headers" (Content-Length).
+    _framing = "headers"
+
+    @classmethod
+    def _read_message(cls) -> dict[str, Any] | None:
         headers: dict[str, str] = {}
         while True:
             line = sys.stdin.buffer.readline()
             if not line:
                 return None
+            if line.lstrip().startswith(b"{"):
+                cls._framing = "ndjson"
+                return json.loads(line.decode("utf-8"))
+            if line.strip() == b"" and not headers:
+                continue
             if line == b"\r\n":
                 break
             key, _, value = line.decode("utf-8").partition(":")
@@ -627,11 +635,14 @@ class McpServer:
         body = sys.stdin.buffer.read(length)
         return json.loads(body.decode("utf-8"))
 
-    @staticmethod
-    def _write_message(payload: dict[str, Any]) -> None:
+    @classmethod
+    def _write_message(cls, payload: dict[str, Any]) -> None:
         encoded = json.dumps(payload).encode("utf-8")
-        sys.stdout.buffer.write(f"Content-Length: {len(encoded)}\r\n\r\n".encode("utf-8"))
-        sys.stdout.buffer.write(encoded)
+        if cls._framing == "ndjson":
+            sys.stdout.buffer.write(encoded + b"\n")
+        else:
+            sys.stdout.buffer.write(f"Content-Length: {len(encoded)}\r\n\r\n".encode("utf-8"))
+            sys.stdout.buffer.write(encoded)
         sys.stdout.buffer.flush()
 
     def _success(self, message_id: Any, result: dict[str, Any]) -> None:
