@@ -173,6 +173,7 @@ class ToolDispatchTests(unittest.TestCase):
         up.assert_called_once_with(
             "/a.mp4", "T", description="", tags=None, category_id="22",
             default_language=None, privacy_status="private", made_for_kids=False,
+            publish_at=None,
         )
 
 

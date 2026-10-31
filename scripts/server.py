@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,30 @@ def abs_path(path_value: str | None) -> Path:
     if not path.is_absolute():
         path = PLUGIN_ROOT / path
     return path.resolve()
+
+
+def normalize_publish_at(value: str) -> str:
+    """Validate a scheduled publish time and return it as UTC ('...Z').
+
+    Needs an explicit UTC offset (or 'Z') so the schedule never depends on
+    the server's time zone, and must lie in the future.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            "publish_at must be an ISO 8601 timestamp with UTC offset, "
+            "for example 2026-11-05T17:00:00+01:00 or 2026-11-05T16:00:00Z."
+        ) from None
+    if parsed.tzinfo is None:
+        raise ValueError(
+            "publish_at needs a UTC offset (for example +01:00 or Z), "
+            "otherwise the time zone is ambiguous."
+        )
+    utc = parsed.astimezone(timezone.utc)
+    if utc <= datetime.now(timezone.utc):
+        raise ValueError("publish_at must be in the future.")
+    return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def ensure_parent(path: Path) -> None:
@@ -323,7 +348,13 @@ class YouTubeClient:
         category_id: str | None = None,
         default_language: str | None = None,
         privacy_status: str | None = None,
+        publish_at: str | None = None,
     ) -> dict[str, Any]:
+        """publish_at: ISO 8601 with offset schedules the video (forces private
+        until then); an empty string removes an existing schedule."""
+        scheduled = normalize_publish_at(publish_at) if publish_at else None
+        if scheduled and privacy_status not in (None, "private"):
+            raise ValueError("A scheduled video must be private until publish_at.")
         existing = self.get_video(video_id)
         snippet = existing["snippet"]
         status = existing["status"]
@@ -339,6 +370,11 @@ class YouTubeClient:
             snippet["defaultLanguage"] = default_language
         if privacy_status is not None:
             status["privacyStatus"] = privacy_status
+        if scheduled:
+            status["privacyStatus"] = "private"
+            status["publishAt"] = scheduled
+        elif publish_at == "" or (privacy_status is not None and privacy_status != "private"):
+            status.pop("publishAt", None)  # clearing, or publishing now
         body = {
             "id": video_id,
             "snippet": snippet,
@@ -378,7 +414,11 @@ class YouTubeClient:
         default_language: str | None = None,
         privacy_status: str = "private",
         made_for_kids: bool = False,
+        publish_at: str | None = None,
     ) -> dict[str, Any]:
+        scheduled = normalize_publish_at(publish_at) if publish_at else None
+        if scheduled and privacy_status != "private":
+            raise ValueError("A scheduled video must be private until publish_at.")
         path = abs_path(file_path)
         if not path.is_file():
             raise RuntimeError(f"Video file not found: {path}")
@@ -408,6 +448,8 @@ class YouTubeClient:
                 "selfDeclaredMadeForKids": made_for_kids,
             },
         }
+        if scheduled:
+            metadata["status"]["publishAt"] = scheduled
         session_url = self._start_resumable_upload(metadata, size, mime)
         video = self._send_resumable_upload(session_url, path, size, mime)
         if video.get("id"):
@@ -626,6 +668,14 @@ class McpServer:
                         "category_id": {"type": "string"},
                         "default_language": {"type": "string"},
                         "privacy_status": {"type": "string"},
+                        "publish_at": {
+                            "type": "string",
+                            "description": (
+                                "Schedule publication: ISO 8601 with UTC offset, e.g. "
+                                "2026-11-05T17:00:00+01:00. The video stays private until then. "
+                                "Empty string removes an existing schedule."
+                            ),
+                        },
                     },
                     "required": ["video_id"],
                     "additionalProperties": False,
@@ -649,6 +699,13 @@ class McpServer:
                         "default_language": {"type": "string", "description": "For example 'de'."},
                         "privacy_status": {"type": "string", "enum": list(PRIVACY_STATUSES)},
                         "made_for_kids": {"type": "boolean", "description": "Default false."},
+                        "publish_at": {
+                            "type": "string",
+                            "description": (
+                                "Schedule publication: ISO 8601 with UTC offset, e.g. "
+                                "2026-11-05T17:00:00+01:00. Requires privacy_status 'private' (default)."
+                            ),
+                        },
                     },
                     "required": ["file_path", "title"],
                     "additionalProperties": False,
@@ -772,6 +829,7 @@ class McpServer:
                 category_id=arguments.get("category_id"),
                 default_language=arguments.get("default_language"),
                 privacy_status=arguments.get("privacy_status"),
+                publish_at=arguments.get("publish_at"),
             )
         if name == "youtube_upload_video":
             return self.youtube.upload_video(
@@ -783,6 +841,7 @@ class McpServer:
                 default_language=arguments.get("default_language"),
                 privacy_status=arguments.get("privacy_status", "private"),
                 made_for_kids=bool(arguments.get("made_for_kids", False)),
+                publish_at=arguments.get("publish_at"),
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
