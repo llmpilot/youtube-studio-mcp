@@ -13,7 +13,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 
 ## Video-Verwaltung (Data API v3)
 
-- [ ] **Video hochladen** – `youtube_upload_video`, Upload mit Fortsetzung (resumable), Titel, Beschreibung, Tags, Sichtbarkeit (`feat: add video upload`)
+- [x] **Video hochladen** – `youtube_upload_video`, Upload mit Fortsetzung (resumable), Titel, Beschreibung, Tags, Sichtbarkeit (`feat: add video upload`)
 - [ ] **Geplante Veröffentlichung** – `publishAt` in `youtube_update_video` und beim Upload (Zeitzone, nur mit `private`) (`feat: add scheduled publishing`)
 - [ ] **Weitere Video-Felder** – `madeForKids`, `embeddable`, `license`, `publicStatsViewable`, `containsSyntheticMedia` (`feat: expose more video status fields`)
 - [ ] **Video löschen** – `youtube_delete_video`, nur mit Bestätigungsparameter (`feat: add video delete`)

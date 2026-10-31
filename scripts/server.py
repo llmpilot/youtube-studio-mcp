@@ -26,6 +26,9 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 YOUTUBE_UPLOAD_BASE = "https://www.googleapis.com/upload/youtube/v3"
 YOUTUBE_ANALYTICS_BASE = "https://youtubeanalytics.googleapis.com/v2"
+PRIVACY_STATUSES = ("private", "unlisted", "public")
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB
+UPLOAD_RETRIES = 3
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.force-ssl",
@@ -106,6 +109,41 @@ def http_empty(
         except json.JSONDecodeError:
             parsed = {"error": {"message": body or str(exc)}}
         raise RuntimeError(parsed.get("error", {}).get("message", body or str(exc))) from exc
+
+
+class ApiError(RuntimeError):
+    """HTTP error from a Google API; keeps the status code for retry decisions."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def http_raw(
+    url: str,
+    *,
+    method: str,
+    headers: dict[str, str],
+    data: bytes | None = None,
+    timeout: int = 300,
+) -> tuple[int, Any, bytes]:
+    """Return (status, headers, body). 308 (resume incomplete) is a normal answer."""
+    request = urllib.request.Request(url, data=data, method=method)
+    for key, value in headers.items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.headers, response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read()
+        if exc.code == 308:
+            return 308, exc.headers, body
+        text = body.decode("utf-8", errors="replace")
+        try:
+            message = json.loads(text).get("error", {}).get("message", text)
+        except (json.JSONDecodeError, AttributeError):
+            message = text or str(exc)
+        raise ApiError(exc.code, message) from exc
 
 
 @dataclass
@@ -329,6 +367,124 @@ class YouTubeClient:
             raw_data=body,
         )
 
+    def upload_video(
+        self,
+        file_path: str,
+        title: str,
+        *,
+        description: str = "",
+        tags: list[str] | None = None,
+        category_id: str = "22",
+        default_language: str | None = None,
+        privacy_status: str = "private",
+        made_for_kids: bool = False,
+    ) -> dict[str, Any]:
+        path = abs_path(file_path)
+        if not path.is_file():
+            raise RuntimeError(f"Video file not found: {path}")
+        size = path.stat().st_size
+        if size == 0:
+            raise RuntimeError(f"Video file is empty: {path}")
+        if not title or not title.strip():
+            raise ValueError("title must not be empty.")
+        if len(title) > 100:
+            raise ValueError("title must be at most 100 characters.")
+        if privacy_status not in PRIVACY_STATUSES:
+            raise ValueError(f"privacy_status must be one of {', '.join(PRIVACY_STATUSES)}.")
+        mime = mimetypes.guess_type(path.name)[0] or "video/*"
+        snippet: dict[str, Any] = {
+            "title": title,
+            "description": description,
+            "categoryId": category_id,
+        }
+        if tags:
+            snippet["tags"] = tags
+        if default_language:
+            snippet["defaultLanguage"] = default_language
+        metadata = {
+            "snippet": snippet,
+            "status": {
+                "privacyStatus": privacy_status,
+                "selfDeclaredMadeForKids": made_for_kids,
+            },
+        }
+        session_url = self._start_resumable_upload(metadata, size, mime)
+        video = self._send_resumable_upload(session_url, path, size, mime)
+        if video.get("id"):
+            video["watchUrl"] = f"https://youtu.be/{video['id']}"
+        return video
+
+    def _start_resumable_upload(self, metadata: dict[str, Any], size: int, mime: str) -> str:
+        _, headers, _ = http_raw(
+            f"{YOUTUBE_UPLOAD_BASE}/videos?uploadType=resumable&part=snippet,status",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._access_token()}",
+                "Content-Type": "application/json; charset=UTF-8",
+                "X-Upload-Content-Length": str(size),
+                "X-Upload-Content-Type": mime,
+            },
+            data=json.dumps(metadata).encode("utf-8"),
+        )
+        location = headers.get("Location")
+        if not location:
+            raise RuntimeError("YouTube did not return an upload session URL.")
+        return location
+
+    def _upload_put(
+        self, session_url: str, mime: str, content_range: str, data: bytes
+    ) -> tuple[int, Any, bytes]:
+        return http_raw(
+            session_url,
+            method="PUT",
+            headers={
+                "Authorization": f"Bearer {self._access_token()}",
+                "Content-Type": mime,
+                "Content-Range": content_range,
+            },
+            data=data,
+        )
+
+    @staticmethod
+    def _next_offset(headers: Any) -> int:
+        """Bytes already stored by YouTube, from the 'Range: bytes=0-N' header."""
+        received = headers.get("Range")
+        return int(received.split("-")[-1]) + 1 if received else 0
+
+    def _send_resumable_upload(
+        self, session_url: str, path: Path, size: int, mime: str
+    ) -> dict[str, Any]:
+        offset = 0
+        failures = 0
+        with path.open("rb") as handle:
+            while True:
+                handle.seek(offset)
+                chunk = handle.read(UPLOAD_CHUNK_SIZE)
+                end = offset + len(chunk) - 1
+                try:
+                    status, headers, body = self._upload_put(
+                        session_url, mime, f"bytes {offset}-{end}/{size}", chunk
+                    )
+                except (ApiError, urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                    retryable = not isinstance(exc, ApiError) or exc.status >= 500
+                    failures += 1
+                    if not retryable or failures > UPLOAD_RETRIES:
+                        raise
+                    time.sleep(min(2**failures, 30))
+                    status, headers, body = self._upload_put(
+                        session_url, mime, f"bytes */{size}", b""
+                    )
+                    if status == 308:
+                        offset = self._next_offset(headers)
+                        continue
+                if status in (200, 201):
+                    return json.loads(body.decode("utf-8")) if body else {}
+                if status == 308:
+                    failures = 0
+                    offset = self._next_offset(headers)
+                    continue
+                raise RuntimeError(f"Unexpected upload response status {status}.")
+
     def channel_analytics(self, start_date: str, end_date: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_ANALYTICS_BASE,
@@ -476,6 +632,29 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_upload_video",
+                "description": (
+                    "Upload a local video file to the channel (resumable, chunked). Defaults to "
+                    "privacy_status 'private'. Costs 1,600 quota units; videos uploaded through "
+                    "an unverified API project are locked to private by YouTube."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Absolute path to the video file."},
+                        "title": {"type": "string", "maxLength": 100},
+                        "description": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "category_id": {"type": "string", "description": "Default 22 (People & Blogs)."},
+                        "default_language": {"type": "string", "description": "For example 'de'."},
+                        "privacy_status": {"type": "string", "enum": list(PRIVACY_STATUSES)},
+                        "made_for_kids": {"type": "boolean", "description": "Default false."},
+                    },
+                    "required": ["file_path", "title"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_upload_thumbnail",
                 "description": "Upload a new custom thumbnail for a video from a local image path.",
                 "inputSchema": {
@@ -593,6 +772,17 @@ class McpServer:
                 category_id=arguments.get("category_id"),
                 default_language=arguments.get("default_language"),
                 privacy_status=arguments.get("privacy_status"),
+            )
+        if name == "youtube_upload_video":
+            return self.youtube.upload_video(
+                arguments["file_path"],
+                arguments["title"],
+                description=arguments.get("description", ""),
+                tags=arguments.get("tags"),
+                category_id=arguments.get("category_id", "22"),
+                default_language=arguments.get("default_language"),
+                privacy_status=arguments.get("privacy_status", "private"),
+                made_for_kids=bool(arguments.get("made_for_kids", False)),
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])

@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "youtube_list_videos",
     "youtube_get_video",
     "youtube_update_video",
+    "youtube_upload_video",
     "youtube_upload_thumbnail",
     "youtube_channel_analytics",
     "youtube_video_analytics",

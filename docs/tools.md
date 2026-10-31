@@ -10,6 +10,7 @@ The server exposes these MCP tools.
 | `youtube_list_videos` | List recent uploads with metadata, status, statistics, and pagination. |
 | `youtube_get_video` | Fetch metadata for a single video. |
 | `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. |
+| `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`. Costs 1,600 quota units. |
 | `youtube_upload_thumbnail` | Upload a local image as a custom thumbnail. |
 | `youtube_channel_analytics` | Read channel-level analytics for a date range. |
 | `youtube_video_analytics` | Read daily analytics for one video across a date range. |
