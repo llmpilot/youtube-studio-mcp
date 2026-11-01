@@ -51,6 +51,9 @@ _TOOL_HINTS = {
     "youtube_create_playlist": ("Create playlist", False, False, False, True),
     "youtube_update_playlist": ("Update playlist", False, True, True, True),
     "youtube_delete_playlist": ("Delete playlist", False, True, True, True),
+    "youtube_add_playlist_item": ("Add video to playlist", False, False, False, True),
+    "youtube_remove_playlist_item": ("Remove video from playlist", False, True, True, True),
+    "youtube_move_playlist_item": ("Reorder playlist item", False, False, True, True),
     "youtube_list_captions": ("List captions", True, False, True, True),
     "youtube_upload_caption": ("Upload caption", False, False, False, True),
     "youtube_update_caption": ("Update caption", False, True, True, True),
@@ -694,6 +697,53 @@ class YouTubeClient:
         self._request(YOUTUBE_API_BASE, "/playlists", method="DELETE", query={"id": playlist_id})
         return {"deleted": playlist_id}
 
+    def add_playlist_item(
+        self, playlist_id: str, video_id: str, position: int | None = None
+    ) -> dict[str, Any]:
+        if position is not None and position < 0:
+            raise ValueError("position must be 0 or greater.")
+        snippet: dict[str, Any] = {
+            "playlistId": playlist_id,
+            "resourceId": {"kind": "youtube#video", "videoId": video_id},
+        }
+        if position is not None:
+            snippet["position"] = position
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlistItems",
+            method="POST",
+            query={"part": "snippet"},
+            body={"snippet": snippet},
+        )
+
+    def remove_playlist_item(self, item_id: str) -> dict[str, Any]:
+        """item_id is the playlist item id (from list_playlist_items), not the video id."""
+        self._request(YOUTUBE_API_BASE, "/playlistItems", method="DELETE", query={"id": item_id})
+        return {"removed": item_id}
+
+    def move_playlist_item(self, item_id: str, position: int) -> dict[str, Any]:
+        if position < 0:
+            raise ValueError("position must be 0 or greater.")
+        result = self._request(
+            YOUTUBE_API_BASE, "/playlistItems", query={"part": "snippet", "id": item_id}
+        )
+        items = result.get("items", [])
+        if not items:
+            raise RuntimeError(f"Playlist item {item_id} not found.")
+        old = items[0]["snippet"]
+        snippet = {
+            "playlistId": old["playlistId"],
+            "resourceId": old["resourceId"],
+            "position": position,
+        }
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlistItems",
+            method="PUT",
+            query={"part": "snippet"},
+            body={"id": item_id, "snippet": snippet},
+        )
+
     def list_captions(self, video_id: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
@@ -1058,6 +1108,49 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_add_playlist_item",
+                "description": "Add a video to a playlist (optionally at a position, 0 = first). Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "playlist_id": {"type": "string"},
+                        "video_id": {"type": "string"},
+                        "position": {"type": "integer", "minimum": 0},
+                    },
+                    "required": ["playlist_id", "video_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_remove_playlist_item",
+                "description": (
+                    "Remove an entry from a playlist (the video itself is kept). item_id is the "
+                    "playlist item id from youtube_list_playlist_items, not the video id. Costs 50 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"item_id": {"type": "string"}},
+                    "required": ["item_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_move_playlist_item",
+                "description": (
+                    "Move a playlist entry to a new position (0 = first). Only works for playlists "
+                    "with manual ordering. Costs 50 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "item_id": {"type": "string"},
+                        "position": {"type": "integer", "minimum": 0},
+                    },
+                    "required": ["item_id", "position"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_list_captions",
                 "description": "List the caption tracks of a video (id, language, name, draft status). Costs 50 quota units.",
                 "inputSchema": {
@@ -1280,6 +1373,17 @@ class McpServer:
             )
         if name == "youtube_delete_playlist":
             return self.youtube.delete_playlist(arguments["playlist_id"])
+        if name == "youtube_add_playlist_item":
+            position = arguments.get("position")
+            return self.youtube.add_playlist_item(
+                arguments["playlist_id"],
+                arguments["video_id"],
+                int(position) if position is not None else None,
+            )
+        if name == "youtube_remove_playlist_item":
+            return self.youtube.remove_playlist_item(arguments["item_id"])
+        if name == "youtube_move_playlist_item":
+            return self.youtube.move_playlist_item(arguments["item_id"], int(arguments["position"]))
         if name == "youtube_list_captions":
             return self.youtube.list_captions(arguments["video_id"])
         if name == "youtube_upload_caption":

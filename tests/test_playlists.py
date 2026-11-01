@@ -112,5 +112,67 @@ class WritePlaylistTests(unittest.TestCase):
         d.assert_called_once_with("PL1")
 
 
+class PlaylistItemTests(unittest.TestCase):
+    def setUp(self):
+        self.client = make_client()
+
+    def test_add_body(self):
+        with mock.patch.object(self.client, "_request", return_value={}) as req:
+            self.client.add_playlist_item("PL1", "vid", position=0)
+        kwargs = req.call_args.kwargs
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["body"]["snippet"], {
+            "playlistId": "PL1",
+            "resourceId": {"kind": "youtube#video", "videoId": "vid"},
+            "position": 0,
+        })
+
+    def test_add_without_position_appends(self):
+        with mock.patch.object(self.client, "_request", return_value={}) as req:
+            self.client.add_playlist_item("PL1", "vid")
+        self.assertNotIn("position", req.call_args.kwargs["body"]["snippet"])
+
+    def test_negative_position_rejected_without_request(self):
+        with mock.patch.object(self.client, "_request") as req:
+            with self.assertRaisesRegex(ValueError, "position"):
+                self.client.add_playlist_item("PL1", "vid", position=-1)
+            with self.assertRaisesRegex(ValueError, "position"):
+                self.client.move_playlist_item("I1", -2)
+        req.assert_not_called()
+
+    def test_remove(self):
+        with mock.patch.object(self.client, "_request", return_value={}) as req:
+            self.assertEqual(self.client.remove_playlist_item("I1"), {"removed": "I1"})
+        self.assertEqual(req.call_args.kwargs["method"], "DELETE")
+        self.assertEqual(req.call_args.kwargs["query"], {"id": "I1"})
+
+    def test_move_keeps_playlist_and_resource(self):
+        found = {"items": [{"snippet": {"playlistId": "PL1", "position": 5, "title": "x",
+                                         "resourceId": {"kind": "youtube#video", "videoId": "vid"}}}]}
+        with mock.patch.object(self.client, "_request", side_effect=[found, {}]) as req:
+            self.client.move_playlist_item("I1", 0)
+        put = req.call_args_list[1].kwargs
+        self.assertEqual(put["method"], "PUT")
+        self.assertEqual(put["body"], {"id": "I1", "snippet": {
+            "playlistId": "PL1",
+            "resourceId": {"kind": "youtube#video", "videoId": "vid"},
+            "position": 0,
+        }})
+
+    def test_move_unknown_item(self):
+        with mock.patch.object(self.client, "_request", return_value={"items": []}):
+            with self.assertRaisesRegex(RuntimeError, "not found"):
+                self.client.move_playlist_item("nope", 1)
+
+    def test_dispatch(self):
+        srv = server.McpServer()
+        with mock.patch.object(srv.youtube, "add_playlist_item", return_value={}) as add:
+            srv._call_tool("youtube_add_playlist_item", {"playlist_id": "PL1", "video_id": "v"})
+        add.assert_called_once_with("PL1", "v", None)
+        with mock.patch.object(srv.youtube, "move_playlist_item", return_value={}) as mv:
+            srv._call_tool("youtube_move_playlist_item", {"item_id": "I1", "position": 2})
+        mv.assert_called_once_with("I1", 2)
+
+
 if __name__ == "__main__":
     unittest.main()

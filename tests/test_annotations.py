@@ -16,6 +16,9 @@ READ_ONLY = {
     "youtube_list_playlist_items",
 }
 WRITES = {
+    "youtube_add_playlist_item",
+    "youtube_remove_playlist_item",
+    "youtube_move_playlist_item",
     "youtube_create_playlist",
     "youtube_update_playlist",
     "youtube_delete_playlist",
@@ -60,11 +63,12 @@ class AnnotationTests(unittest.TestCase):
             "youtube_update_video", "youtube_upload_thumbnail",
             "youtube_update_caption", "youtube_delete_caption",
             "youtube_update_playlist", "youtube_delete_playlist",
+            "youtube_remove_playlist_item",
         })
 
     def test_repeating_additive_writes_is_not_idempotent(self):
         for name in ("youtube_upload_video", "youtube_post_comment", "youtube_upload_caption",
-                     "youtube_create_playlist"):
+                     "youtube_create_playlist", "youtube_add_playlist_item"):
             self.assertFalse(self.tools[name]["annotations"]["idempotentHint"], name)
 
     def test_local_tools_are_not_open_world(self):
