@@ -7,6 +7,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import secrets
 import sys
 import time
@@ -30,6 +31,8 @@ YOUTUBE_ANALYTICS_BASE = "https://youtubeanalytics.googleapis.com/v2"
 PRIVACY_STATUSES = ("private", "unlisted", "public")
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB
 UPLOAD_RETRIES = 3
+LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+CAPTION_FORMATS = ("srt", "vtt", "sbv", "scc", "ttml")
 # Hints for MCP clients so they can auto-allow reads and confirm writes.
 # (title, readOnly, destructive, idempotent, openWorld)
 #   destructive = overwrites or removes existing data; additive writes are not.
@@ -43,6 +46,12 @@ _TOOL_HINTS = {
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
+    "youtube_list_captions": ("List captions", True, False, True, True),
+    "youtube_upload_caption": ("Upload caption", False, False, False, True),
+    "youtube_update_caption": ("Update caption", False, True, True, True),
+    "youtube_delete_caption": ("Delete caption", False, True, True, True),
+    # not read-only: may write a local file when output_path is given
+    "youtube_download_caption": ("Download caption", False, False, True, True),
     "youtube_channel_analytics": ("Channel analytics", True, False, True, True),
     "youtube_video_analytics": ("Video analytics", True, False, True, True),
     "youtube_post_comment": ("Post comment", False, False, False, True),
@@ -104,6 +113,21 @@ def normalize_publish_at(value: str) -> str:
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def build_multipart(
+    metadata: dict[str, Any], media: bytes, media_type: str = "application/octet-stream"
+) -> tuple[str, bytes]:
+    """multipart/related body (JSON metadata + media) as Google upload endpoints expect."""
+    boundary = secrets.token_hex(16)
+    parts = [
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode("utf-8"),
+        json.dumps(metadata).encode("utf-8"),
+        f"\r\n--{boundary}\r\nContent-Type: {media_type}\r\n\r\n".encode("utf-8"),
+        media,
+        f"\r\n--{boundary}--\r\n".encode("utf-8"),
+    ]
+    return f"multipart/related; boundary={boundary}", b"".join(parts)
+
+
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -132,7 +156,8 @@ def http_json(
         request.add_header(key, value)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}  # DELETE answers 204 No Content
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         try:
@@ -281,6 +306,7 @@ class YouTubeClient:
         body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         raw_data: bytes | None = None,
+        as_text: bool = False,
     ) -> dict[str, Any]:
         query_string = ""
         if query:
@@ -296,6 +322,9 @@ class YouTubeClient:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
+        if as_text:  # non-JSON answer (caption download)
+            _, _, content = http_raw(url, method=method, headers=request_headers, data=data, timeout=60)
+            return {"content": content.decode("utf-8-sig")}
         return http_json(url, method=method, headers=request_headers, data=data)
 
     def channel_overview(self) -> dict[str, Any]:
@@ -556,6 +585,105 @@ class YouTubeClient:
                     continue
                 raise RuntimeError(f"Unexpected upload response status {status}.")
 
+    def list_captions(self, video_id: str) -> dict[str, Any]:
+        return self._request(
+            YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
+        )
+
+    @staticmethod
+    def _read_caption_file(file_path: str) -> bytes:
+        path = abs_path(file_path)
+        if not path.is_file():
+            raise RuntimeError(f"Caption file not found: {path}")
+        data = path.read_bytes()
+        if not data.strip():
+            raise RuntimeError(f"Caption file is empty: {path}")
+        return data
+
+    def upload_caption(
+        self,
+        video_id: str,
+        file_path: str,
+        language: str,
+        *,
+        name: str = "",
+        is_draft: bool = False,
+    ) -> dict[str, Any]:
+        if not LANGUAGE_RE.match(language or ""):
+            raise ValueError("language must be a BCP-47 code such as 'de' or 'en-US'.")
+        data = self._read_caption_file(file_path)
+        metadata = {
+            "snippet": {
+                "videoId": video_id,
+                "language": language,
+                "name": name,
+                "isDraft": is_draft,
+            }
+        }
+        content_type, body = build_multipart(metadata, data, "application/octet-stream")
+        return self._request(
+            YOUTUBE_UPLOAD_BASE,
+            "/captions",
+            method="POST",
+            query={"part": "snippet", "uploadType": "multipart"},
+            headers={"Content-Type": content_type},
+            raw_data=body,
+        )
+
+    def update_caption(
+        self,
+        caption_id: str,
+        *,
+        file_path: str | None = None,
+        is_draft: bool | None = None,
+    ) -> dict[str, Any]:
+        if file_path is None and is_draft is None:
+            raise ValueError("Give file_path (new content) and/or is_draft.")
+        metadata: dict[str, Any] = {"id": caption_id}
+        if is_draft is not None:
+            metadata["snippet"] = {"isDraft": is_draft}
+        if file_path is None:
+            return self._request(
+                YOUTUBE_API_BASE, "/captions", method="PUT", query={"part": "snippet"}, body=metadata
+            )
+        content_type, body = build_multipart(
+            metadata, self._read_caption_file(file_path), "application/octet-stream"
+        )
+        return self._request(
+            YOUTUBE_UPLOAD_BASE,
+            "/captions",
+            method="PUT",
+            query={"part": "snippet", "uploadType": "multipart"},
+            headers={"Content-Type": content_type},
+            raw_data=body,
+        )
+
+    def delete_caption(self, caption_id: str) -> dict[str, Any]:
+        self._request(YOUTUBE_API_BASE, "/captions", method="DELETE", query={"id": caption_id})
+        return {"deleted": caption_id}
+
+    def download_caption(
+        self, caption_id: str, fmt: str = "srt", output_path: str | None = None
+    ) -> dict[str, Any]:
+        if fmt not in CAPTION_FORMATS:
+            raise ValueError(f"format must be one of {', '.join(CAPTION_FORMATS)}.")
+        target = None
+        if output_path:
+            target = abs_path(output_path)
+            if target.exists():
+                raise RuntimeError(f"{target} already exists; choose another output_path.")
+        text = self._request(
+            YOUTUBE_API_BASE,
+            f"/captions/{urllib.parse.quote(caption_id, safe='')}",
+            query={"tfmt": fmt},
+            as_text=True,
+        )["content"]
+        if target is None:
+            return {"format": fmt, "content": text}
+        ensure_parent(target)
+        target.write_text(text, encoding="utf-8")
+        return {"format": fmt, "saved_to": str(target), "characters": len(text)}
+
     def channel_analytics(self, start_date: str, end_date: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_ANALYTICS_BASE,
@@ -754,6 +882,79 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_list_captions",
+                "description": "List the caption tracks of a video (id, language, name, draft status). Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"video_id": {"type": "string"}},
+                    "required": ["video_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_upload_caption",
+                "description": (
+                    "Add a caption track to a video from a local subtitle file (.srt, .vtt, ...). "
+                    "Costs 400 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "video_id": {"type": "string"},
+                        "file_path": {"type": "string", "description": "Absolute path to the subtitle file."},
+                        "language": {"type": "string", "description": "BCP-47 code, for example 'de'."},
+                        "name": {"type": "string", "description": "Track name shown to viewers (optional)."},
+                        "is_draft": {"type": "boolean", "description": "Keep unpublished. Default false."},
+                    },
+                    "required": ["video_id", "file_path", "language"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_update_caption",
+                "description": (
+                    "Replace the content of a caption track and/or change its draft status. "
+                    "Costs 450 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "caption_id": {"type": "string"},
+                        "file_path": {"type": "string", "description": "New subtitle file (replaces the track)."},
+                        "is_draft": {"type": "boolean"},
+                    },
+                    "required": ["caption_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_delete_caption",
+                "description": "Permanently delete a caption track. Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"caption_id": {"type": "string"}},
+                    "required": ["caption_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_download_caption",
+                "description": (
+                    "Download a caption track you own as srt, vtt, sbv, scc or ttml. Returns the text, "
+                    "or saves it when output_path is given (refuses to overwrite). Costs 200 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "caption_id": {"type": "string"},
+                        "format": {"type": "string", "enum": list(CAPTION_FORMATS)},
+                        "output_path": {"type": "string"},
+                    },
+                    "required": ["caption_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_channel_analytics",
                 "description": "Return channel-level analytics for a date range.",
                 "inputSchema": {
@@ -876,6 +1077,30 @@ class McpServer:
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
+        if name == "youtube_list_captions":
+            return self.youtube.list_captions(arguments["video_id"])
+        if name == "youtube_upload_caption":
+            return self.youtube.upload_caption(
+                arguments["video_id"],
+                arguments["file_path"],
+                arguments["language"],
+                name=arguments.get("name", ""),
+                is_draft=bool(arguments.get("is_draft", False)),
+            )
+        if name == "youtube_update_caption":
+            return self.youtube.update_caption(
+                arguments["caption_id"],
+                file_path=arguments.get("file_path"),
+                is_draft=arguments.get("is_draft"),
+            )
+        if name == "youtube_delete_caption":
+            return self.youtube.delete_caption(arguments["caption_id"])
+        if name == "youtube_download_caption":
+            return self.youtube.download_caption(
+                arguments["caption_id"],
+                arguments.get("format", "srt"),
+                arguments.get("output_path"),
+            )
         if name == "youtube_channel_analytics":
             return self.youtube.channel_analytics(arguments["start_date"], arguments["end_date"])
         if name == "youtube_video_analytics":

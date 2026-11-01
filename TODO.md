@@ -23,7 +23,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 
 ## Untertitel
 
-- [ ] **Untertitel verwalten** – `youtube_list_captions`, `youtube_upload_caption` (SRT/VTT, Deutsch), `youtube_update_caption`, `youtube_delete_caption`, `youtube_download_caption` (`feat: add caption tools`)
+- [x] **Untertitel verwalten** – `youtube_list_captions`, `youtube_upload_caption` (SRT/VTT, Deutsch), `youtube_update_caption`, `youtube_delete_caption`, `youtube_download_caption` (`feat: add caption tools`)
 
 ## Playlists
 

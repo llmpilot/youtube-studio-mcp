@@ -12,6 +12,11 @@ The server exposes these MCP tools.
 | `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. |
 | `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it. Costs 1,600 quota units. |
 | `youtube_upload_thumbnail` | Upload a local image as a custom thumbnail. |
+| `youtube_list_captions` | List a video's caption tracks (50 quota units). |
+| `youtube_upload_caption` | Add a caption track from a local .srt/.vtt file (language, name, draft; 400 units). |
+| `youtube_update_caption` | Replace a track's content and/or draft status (450 units). |
+| `youtube_delete_caption` | Delete a caption track (50 units). |
+| `youtube_download_caption` | Download a track as srt/vtt/sbv/scc/ttml, optionally saved to a file (200 units). |
 | `youtube_channel_analytics` | Read channel-level analytics for a date range. |
 | `youtube_video_analytics` | Read daily analytics for one video across a date range. |
 | `youtube_post_comment` | Post a top-level comment on a video. |
@@ -41,8 +46,8 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 
 | Hint | Tools |
 | --- | --- |
-| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
-| `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail` |
-| additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment` |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail`, `youtube_update_caption`, `youtube_delete_caption` |
+| additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_download_caption` (may write a local file) |
 
 New tools must be added to `_TOOL_HINTS` in `scripts/server.py`; a test fails otherwise.

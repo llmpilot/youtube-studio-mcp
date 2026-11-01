@@ -11,8 +11,13 @@ READ_ONLY = {
     "youtube_channel_analytics",
     "youtube_video_analytics",
     "youtube_list_comments",
+    "youtube_list_captions",
 }
 WRITES = {
+    "youtube_upload_caption",
+    "youtube_update_caption",
+    "youtube_delete_caption",
+    "youtube_download_caption",
     "youtube_update_video",
     "youtube_upload_video",
     "youtube_upload_thumbnail",
@@ -46,10 +51,13 @@ class AnnotationTests(unittest.TestCase):
 
     def test_overwriting_tools_are_destructive_additive_ones_are_not(self):
         destructive = {n for n in WRITES if self.tools[n]["annotations"]["destructiveHint"]}
-        self.assertEqual(destructive, {"youtube_update_video", "youtube_upload_thumbnail"})
+        self.assertEqual(destructive, {
+            "youtube_update_video", "youtube_upload_thumbnail",
+            "youtube_update_caption", "youtube_delete_caption",
+        })
 
     def test_repeating_additive_writes_is_not_idempotent(self):
-        for name in ("youtube_upload_video", "youtube_post_comment"):
+        for name in ("youtube_upload_video", "youtube_post_comment", "youtube_upload_caption"):
             self.assertFalse(self.tools[name]["annotations"]["idempotentHint"], name)
 
     def test_local_tools_are_not_open_world(self):
