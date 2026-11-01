@@ -33,6 +33,8 @@ UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB
 UPLOAD_RETRIES = 3
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 CAPTION_FORMATS = ("srt", "vtt", "sbv", "scc", "ttml")
+MODERATION_STATUSES = ("published", "heldForReview", "rejected")
+MAX_COMMENT_LENGTH = 10_000
 # Hints for MCP clients so they can auto-allow reads and confirm writes.
 # (title, readOnly, destructive, idempotent, openWorld)
 #   destructive = overwrites or removes existing data; additive writes are not.
@@ -55,6 +57,10 @@ _TOOL_HINTS = {
     "youtube_add_playlist_item": ("Add video to playlist", False, False, False, True),
     "youtube_remove_playlist_item": ("Remove video from playlist", False, True, True, True),
     "youtube_move_playlist_item": ("Reorder playlist item", False, False, True, True),
+    "youtube_reply_to_comment": ("Reply to comment", False, False, False, True),
+    "youtube_list_replies": ("List replies", True, False, True, True),
+    "youtube_delete_comment": ("Delete comment", False, True, True, True),
+    "youtube_moderate_comments": ("Moderate comments", False, True, True, True),
     "youtube_list_captions": ("List captions", True, False, True, True),
     "youtube_upload_caption": ("Upload caption", False, False, False, True),
     "youtube_update_caption": ("Update caption", False, True, True, True),
@@ -918,6 +924,63 @@ class YouTubeClient:
             body={"id": item_id, "snippet": snippet},
         )
 
+    def reply_to_comment(self, parent_id: str, text: str) -> dict[str, Any]:
+        """parent_id: id of a top-level comment (YouTube has no replies to replies)."""
+        if not text or not text.strip():
+            raise ValueError("text must not be empty.")
+        if len(text) > MAX_COMMENT_LENGTH:
+            raise ValueError(f"text must be at most {MAX_COMMENT_LENGTH} characters.")
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/comments",
+            method="POST",
+            query={"part": "snippet"},
+            body={"snippet": {"parentId": parent_id, "textOriginal": text}},
+        )
+
+    def list_replies(
+        self, parent_id: str, max_results: int = 20, page_token: str | None = None
+    ) -> dict[str, Any]:
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/comments",
+            query={
+                "part": "snippet",
+                "parentId": parent_id,
+                "maxResults": max(1, min(max_results, 100)),
+                "pageToken": page_token,
+                "textFormat": "plainText",
+            },
+        )
+
+    def delete_comment(self, comment_id: str) -> dict[str, Any]:
+        self._request(YOUTUBE_API_BASE, "/comments", method="DELETE", query={"id": comment_id})
+        return {"deleted": comment_id}
+
+    def moderate_comments(
+        self, comment_ids: list[str], status: str, ban_author: bool = False
+    ) -> dict[str, Any]:
+        if not comment_ids or not all(isinstance(c, str) and c for c in comment_ids):
+            raise ValueError("comment_ids must be a non-empty list of comment ids.")
+        if len(comment_ids) > 50:
+            raise ValueError("At most 50 comments per call.")
+        if status not in MODERATION_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(MODERATION_STATUSES)}.")
+        if ban_author and status != "rejected":
+            raise ValueError("ban_author only works together with status 'rejected'.")
+        self._request(
+            YOUTUBE_API_BASE,
+            "/comments/setModerationStatus",
+            method="POST",
+            query={
+                "id": ",".join(comment_ids),
+                "moderationStatus": status,
+                "banAuthor": "true" if ban_author else None,
+            },
+            raw_data=b"",
+        )
+        return {"moderated": comment_ids, "status": status, "banned_author": ban_author}
+
     def list_captions(self, video_id: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
@@ -1342,6 +1405,68 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_reply_to_comment",
+                "description": (
+                    "Reply to a comment. comment_id is the top-level comment id (topLevelComment.id from "
+                    "youtube_list_comments); YouTube has no replies to replies. Costs 50 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {"type": "string"},
+                        "text": {"type": "string", "maxLength": 10000},
+                    },
+                    "required": ["comment_id", "text"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_list_replies",
+                "description": "List the replies to a top-level comment. Costs 1 quota unit.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "comment_id": {"type": "string"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "page_token": {"type": "string"},
+                    },
+                    "required": ["comment_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_delete_comment",
+                "description": (
+                    "Permanently delete a comment or reply (your own, or any comment on your videos). "
+                    "Costs 50 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"comment_id": {"type": "string"}},
+                    "required": ["comment_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_moderate_comments",
+                "description": (
+                    "Set the moderation status of up to 50 comments on your videos in one call: "
+                    "'published' (approve), 'heldForReview' (hide until approved) or 'rejected' "
+                    "(remove from view; spam handling). ban_author also bans the authors from your "
+                    "channel (only with 'rejected'). Costs 50 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "comment_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50},
+                        "status": {"type": "string", "enum": list(MODERATION_STATUSES)},
+                        "ban_author": {"type": "boolean", "description": "Default false."},
+                    },
+                    "required": ["comment_ids", "status"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_list_captions",
                 "description": "List the caption tracks of a video (id, language, name, draft status). Costs 50 quota units.",
                 "inputSchema": {
@@ -1577,6 +1702,22 @@ class McpServer:
             return self.youtube.remove_playlist_item(arguments["item_id"])
         if name == "youtube_move_playlist_item":
             return self.youtube.move_playlist_item(arguments["item_id"], int(arguments["position"]))
+        if name == "youtube_reply_to_comment":
+            return self.youtube.reply_to_comment(arguments["comment_id"], arguments["text"])
+        if name == "youtube_list_replies":
+            return self.youtube.list_replies(
+                arguments["comment_id"],
+                int(arguments.get("max_results", 20)),
+                arguments.get("page_token"),
+            )
+        if name == "youtube_delete_comment":
+            return self.youtube.delete_comment(arguments["comment_id"])
+        if name == "youtube_moderate_comments":
+            return self.youtube.moderate_comments(
+                arguments["comment_ids"],
+                arguments["status"],
+                bool(arguments.get("ban_author", False)),
+            )
         if name == "youtube_list_captions":
             return self.youtube.list_captions(arguments["video_id"])
         if name == "youtube_upload_caption":
