@@ -69,3 +69,16 @@ reset, an expired or revoked login (`invalid_grant`) points to `scripts/auth.py 
 that video, playlist, playlist item and caption ids are different. The original HTTP status, reason and
 message always follow under `Details:`. Only protocol problems (unknown method, unknown tool) are
 JSON-RPC errors.
+
+## Quota
+
+`youtube_quota_status` shows the estimated YouTube Data API units this server spent today, what is
+left, when the quota resets (midnight Pacific Time, DST-aware without extra dependencies) and a
+breakdown per call. Costs follow Google's table: reads 1, writes 50, caption upload 400, caption
+update 450, caption download 200, search 100, video upload 1,600. The Analytics API has its own quota
+and is not counted.
+
+The counter is saved in `secrets/quota_usage.json` (next to the token) so restarts keep the total.
+It is an estimate: other apps using the same Google Cloud project and failed calls are not included.
+Settings: `YOUTUBE_DAILY_QUOTA` (default 10000, for example after a quota increase) and
+`YOUTUBE_QUOTA_FILE`.

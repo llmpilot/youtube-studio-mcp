@@ -54,7 +54,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 
 ## Betrieb und Doku
 
-- [ ] **Kontingent-Zähler** – verbrauchte Einheiten je Sitzung mitzählen, Tool `youtube_quota_status` (`feat: track API quota usage`)
+- [x] **Kontingent-Zähler** – verbrauchte Einheiten je Sitzung mitzählen, Tool `youtube_quota_status` (`feat: track API quota usage`)
 - [ ] **Scopes minimieren** – Anmeldung mit nur lesenden Rechten als Option (`--readonly`) (`feat: read-only auth mode`)
 - [ ] **Paket installierbar** – Einstiegspunkt in `pyproject.toml` (`youtube-studio-mcp`), `pipx`/`uvx`-Hinweis (`build: add console entry point`)
 - [ ] **Doku** – `docs/tools.md` und README je Feature ergänzen, Windows-Pfade und Claude-Code-Setup (`docs: update for new tools`)

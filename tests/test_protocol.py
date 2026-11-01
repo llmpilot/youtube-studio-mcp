@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "youtube_update_video",
     "youtube_upload_video",
     "youtube_upload_thumbnail",
+    "youtube_quota_status",
     "youtube_list_playlists",
     "youtube_list_playlist_items",
     "youtube_create_playlist",

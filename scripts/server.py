@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,7 @@ _TOOL_HINTS = {
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
+    "youtube_quota_status": ("Quota status", True, False, True, False),
     "youtube_list_playlists": ("List playlists", True, False, True, True),
     "youtube_list_playlist_items": ("List playlist items", True, False, True, True),
     "youtube_create_playlist": ("Create playlist", False, False, False, True),
@@ -279,6 +280,128 @@ class UnknownTool(RuntimeError):
     """Protocol-level error: the client called a tool that does not exist."""
 
 
+# --- Quota accounting -------------------------------------------------------
+# YouTube Data API units per call (https://developers.google.com/youtube/v3/determine_quota_cost).
+# The Analytics API has its own quota and is not counted here.
+DEFAULT_DAILY_QUOTA = 10_000
+VIDEO_UPLOAD_COST = 1600
+_COSTS = {
+    ("search", "GET"): 100,
+    ("captions", "GET"): 50,
+    ("captions", "PUT"): 450,
+    ("captions", "POST"): 400,
+    ("captions", "DELETE"): 50,
+    ("thumbnails", "POST"): 50,
+}
+
+
+def request_cost(base_url: str, path: str, method: str) -> int:
+    """Quota units one successful call costs (0 for APIs outside the YouTube Data quota)."""
+    if base_url == YOUTUBE_ANALYTICS_BASE:
+        return 0
+    parts = [p for p in path.split("/") if p]
+    resource = parts[0] if parts else ""
+    if resource == "captions" and len(parts) > 1 and method == "GET":
+        return 200  # captions.download
+    if (resource, method) in _COSTS:
+        return _COSTS[(resource, method)]
+    return 1 if method == "GET" else 50
+
+
+def _nth_sunday(year: int, month: int, n: int) -> int:
+    first = datetime(year, month, 1)
+    return 1 + (6 - first.weekday()) % 7 + 7 * (n - 1)
+
+
+def pacific_offset(utc: datetime) -> timedelta:
+    """UTC offset of US Pacific time at a UTC instant (DST: 2nd Sun March to 1st Sun Nov)."""
+    year = utc.year
+    start = datetime(year, 3, _nth_sunday(year, 3, 2), 10, tzinfo=timezone.utc)  # 02:00 PST
+    end = datetime(year, 11, _nth_sunday(year, 11, 1), 9, tzinfo=timezone.utc)  # 02:00 PDT
+    return timedelta(hours=-7) if start <= utc < end else timedelta(hours=-8)
+
+
+def quota_day(now: datetime | None = None) -> str:
+    """The quota day (Pacific calendar date) a moment belongs to."""
+    now = now or datetime.now(timezone.utc)
+    return (now + pacific_offset(now)).date().isoformat()
+
+
+def next_quota_reset(now: datetime | None = None) -> datetime:
+    """Next midnight Pacific time, as a UTC datetime."""
+    now = now or datetime.now(timezone.utc)
+    local = now + pacific_offset(now)
+    midnight = datetime(local.year, local.month, local.day) + timedelta(days=1)
+    for hours in (-7, -8):
+        candidate = (midnight - timedelta(hours=hours)).replace(tzinfo=timezone.utc)
+        if pacific_offset(candidate) == timedelta(hours=hours):
+            return candidate
+    return (midnight + timedelta(hours=8)).replace(tzinfo=timezone.utc)
+
+
+class QuotaTracker:
+    """Counts the units this server spends per quota day, persisted so restarts keep the total.
+
+    It is an estimate: only calls made through this server count, and failed calls are not counted.
+    """
+
+    def __init__(self, path: Path | None = None, limit: int = DEFAULT_DAILY_QUOTA):
+        self.path = path
+        self.limit = limit
+        self.day = quota_day()
+        self.used = 0
+        self.calls: dict[str, int] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path or not self.path.exists():
+            return
+        try:
+            saved = read_json(self.path)
+            if saved.get("day") == self.day:
+                self.used = int(saved.get("used", 0))
+                self.calls = {str(k): int(v) for k, v in saved.get("calls", {}).items()}
+        except (OSError, ValueError, AttributeError):
+            pass  # unreadable counter file: start from zero
+
+    def _roll(self, now: datetime | None) -> None:
+        today = quota_day(now)
+        if today != self.day:
+            self.day, self.used, self.calls = today, 0, {}
+
+    def add(self, units: int, label: str, now: datetime | None = None) -> None:
+        if units <= 0:
+            return
+        self._roll(now)
+        self.used += units
+        self.calls[label] = self.calls.get(label, 0) + units
+        if self.path:
+            try:
+                write_json(self.path, {"day": self.day, "used": self.used, "calls": self.calls})
+            except OSError:
+                pass  # never fail a request because the counter cannot be saved
+
+    def status(self, now: datetime | None = None) -> dict[str, Any]:
+        self._roll(now)
+        remaining = max(self.limit - self.used, 0)
+        result: dict[str, Any] = {
+            "quota_day": self.day,
+            "resets_at_utc": next_quota_reset(now).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "daily_limit": self.limit,
+            "used_estimate": self.used,
+            "remaining_estimate": remaining,
+            "breakdown": dict(sorted(self.calls.items(), key=lambda kv: -kv[1])),
+            "note": (
+                "Estimate of YouTube Data API units spent through this server today (Pacific day). "
+                "Other apps using the same Google Cloud project, failed calls and the separate "
+                "Analytics API are not included. Compare with the Google Cloud console for the exact figure."
+            ),
+        }
+        if self.used >= self.limit * 0.8:
+            result["warning"] = f"{self.used} of {self.limit} units used; a video upload costs {VIDEO_UPLOAD_COST}."
+        return result
+
+
 @dataclass
 class AuthConfig:
     client_secrets_path: Path
@@ -313,8 +436,9 @@ class AuthConfig:
 
 
 class YouTubeClient:
-    def __init__(self, auth: AuthConfig):
+    def __init__(self, auth: AuthConfig, quota: QuotaTracker | None = None):
         self.auth = auth
+        self.quota = quota or QuotaTracker()
 
     def _refresh_token(self, token: dict[str, Any]) -> dict[str, Any]:
         client = self.auth.load_client_config()
@@ -378,8 +502,11 @@ class YouTubeClient:
             request_headers["Content-Type"] = "application/json"
         if as_text:  # non-JSON answer (caption download)
             _, _, content = http_raw(url, method=method, headers=request_headers, data=data, timeout=60)
-            return {"content": content.decode("utf-8-sig")}
-        return http_json(url, method=method, headers=request_headers, data=data)
+            result = {"content": content.decode("utf-8-sig")}
+        else:
+            result = http_json(url, method=method, headers=request_headers, data=data)
+        self.quota.add(request_cost(base_url, path, method), f"{method} {path}")
+        return result
 
     def channel_overview(self) -> dict[str, Any]:
         return self._request(
@@ -564,6 +691,7 @@ class YouTubeClient:
             metadata["status"]["publishAt"] = scheduled
         session_url = self._start_resumable_upload(metadata, size, mime)
         video = self._send_resumable_upload(session_url, path, size, mime)
+        self.quota.add(VIDEO_UPLOAD_COST, "POST /videos (upload)")
         if video.get("id"):
             video["watchUrl"] = f"https://youtu.be/{video['id']}"
         return video
@@ -978,7 +1106,16 @@ class McpServer:
             client_secrets_path=abs_path(client_secrets),
             token_path=abs_path(token_file),
         )
-        self.youtube = YouTubeClient(self.auth)
+        quota_file = os.environ.get("YOUTUBE_QUOTA_FILE") or str(
+            abs_path(token_file).parent / "quota_usage.json"
+        )
+        self.youtube = YouTubeClient(
+            self.auth,
+            QuotaTracker(
+                abs_path(quota_file),
+                int(os.environ.get("YOUTUBE_DAILY_QUOTA", DEFAULT_DAILY_QUOTA)),
+            ),
+        )
         self.tools = [
             {
                 "name": "youtube_auth_status",
@@ -1085,6 +1222,14 @@ class McpServer:
                     "required": ["video_id", "image_path"],
                     "additionalProperties": False,
                 },
+            },
+            {
+                "name": "youtube_quota_status",
+                "description": (
+                    "Show the estimated YouTube Data API quota this server has used today "
+                    "(Pacific day), what is left, when it resets, and which calls cost the most. Free."
+                ),
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             },
             {
                 "name": "youtube_list_playlists",
@@ -1392,6 +1537,8 @@ class McpServer:
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
+        if name == "youtube_quota_status":
+            return self.youtube.quota.status()
         if name == "youtube_list_playlists":
             return self.youtube.list_playlists(
                 int(arguments.get("max_results", 25)), arguments.get("page_token")

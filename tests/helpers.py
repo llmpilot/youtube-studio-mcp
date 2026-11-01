@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import io
 import json
+import os
+import shutil
 import sys
+import tempfile
 import types
 from pathlib import Path
 from unittest import mock
+
+# Keep the quota counter of McpServer() out of the real secrets/ folder during tests.
+_TEST_DIR = tempfile.mkdtemp(prefix="yt-mcp-tests-")
+atexit.register(shutil.rmtree, _TEST_DIR, ignore_errors=True)
+os.environ["YOUTUBE_QUOTA_FILE"] = str(Path(_TEST_DIR) / "quota_usage.json")
 
 SERVER_PATH = Path(__file__).resolve().parent.parent / "scripts" / "server.py"
 

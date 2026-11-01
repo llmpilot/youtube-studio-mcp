@@ -14,6 +14,7 @@ READ_ONLY = {
     "youtube_list_captions",
     "youtube_list_playlists",
     "youtube_list_playlist_items",
+    "youtube_quota_status",
 }
 WRITES = {
     "youtube_add_playlist_item",
