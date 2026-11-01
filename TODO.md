@@ -46,7 +46,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 
 ## Analytics
 
-- [ ] **Freie Abfrage** – `youtube_analytics_query` mit `metrics`, `dimensions`, `filters`, `sort`, `maxResults` (bisher feste Kennzahlen) (`feat: generic analytics query`)
+- [x] **Freie Abfrage** – `youtube_analytics_query` mit `metrics`, `dimensions`, `filters`, `sort`, `maxResults` (bisher feste Kennzahlen) (`feat: generic analytics query`)
 - [ ] **Fertige Berichte** – Top-Videos, Traffic-Quellen, Suchbegriffe, Geräte, Länder, Alter/Geschlecht (`feat: preset analytics reports`)
 - [ ] **Zuschauerbindung** – `audienceRetention` je Video (Verlauf über die Laufzeit) (`feat: add audience retention`)
 - [ ] **Impressionen und Klickrate** – Thumbnail-Impressions und CTR, soweit die API sie liefert (`feat: add impressions and CTR`)

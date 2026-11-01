@@ -37,6 +37,10 @@ MODERATION_STATUSES = ("published", "heldForReview", "rejected")
 MAX_COMMENT_LENGTH = 10_000
 COMMENT_ORDERS = ("time", "relevance")
 THREAD_MODERATION_FILTERS = ("published", "heldForReview", "likelySpam")
+ANALYTICS_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+ANALYTICS_SORT_RE = re.compile(r"^-?[A-Za-z][A-Za-z0-9]*$")
+ANALYTICS_FILTER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*==[^;=]+$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Hints for MCP clients so they can auto-allow reads and confirm writes.
 # (title, readOnly, destructive, idempotent, openWorld)
 #   destructive = overwrites or removes existing data; additive writes are not.
@@ -50,6 +54,7 @@ _TOOL_HINTS = {
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
+    "youtube_analytics_query": ("Analytics query", True, False, True, True),
     "youtube_quota_status": ("Quota status", True, False, True, False),
     "youtube_list_playlists": ("List playlists", True, False, True, True),
     "youtube_list_playlist_items": ("List playlist items", True, False, True, True),
@@ -271,6 +276,11 @@ def explain_error(exc: BaseException) -> str:
             hint = "The channel hit YouTube's upload limit. Try again later."
         elif status >= 500:
             hint = "YouTube had a temporary problem. Try again in a minute."
+        elif status == 400:
+            hint = (
+                "The request was invalid. Check ids and dates and, for analytics, that the metrics, "
+                "dimensions, filters and sort can be combined."
+            )
         else:
             hint = "YouTube rejected the request."
         return f"{hint}\n\nDetails: {detail}"
@@ -984,6 +994,97 @@ class YouTubeClient:
         )
         return {"moderated": comment_ids, "status": status, "banned_author": ban_author}
 
+    @staticmethod
+    def _analytics_list(value: Any, field: str, pattern: "re.Pattern[str]", required: bool = False) -> list[str]:
+        """Accept 'a,b' or ['a', 'b']; check every name so nothing odd reaches the query string."""
+        if value is None or value == "" or value == []:
+            items: list[str] = []
+        elif isinstance(value, str):
+            items = [part.strip() for part in value.split(",") if part.strip()]
+        elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+            items = [v.strip() for v in value if v.strip()]
+        else:
+            raise ValueError(f"{field} must be a comma-separated string or a list of strings.")
+        if required and not items:
+            raise ValueError(f"{field} must not be empty.")
+        for item in items:
+            if not pattern.match(item):
+                raise ValueError(f"Invalid name in {field}: {item!r}.")
+        return items
+
+    @staticmethod
+    def _analytics_filters(value: Any) -> list[str]:
+        """Accept 'video==ID;country==DE', ['video==ID', ...] or {'video': 'ID', 'country': 'DE'}."""
+        if value is None or value == "" or value == [] or value == {}:
+            return []
+        if isinstance(value, dict):
+            parts = [f"{key}=={val}" for key, val in value.items()]
+        elif isinstance(value, str):
+            parts = [part.strip() for part in value.split(";") if part.strip()]
+        elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+            parts = [v.strip() for v in value if v.strip()]
+        else:
+            raise ValueError("filters must be a string, a list of 'name==value' or an object.")
+        for part in parts:
+            if not ANALYTICS_FILTER_RE.match(part):
+                raise ValueError(f"Invalid filter {part!r}; use name==value, for example video==VIDEO_ID.")
+        return parts
+
+    def analytics_query(
+        self,
+        start_date: str,
+        end_date: str,
+        metrics: Any,
+        dimensions: Any = None,
+        filters: Any = None,
+        sort: Any = None,
+        max_results: int | None = None,
+        start_index: int | None = None,
+    ) -> dict[str, Any]:
+        for field, value in (("start_date", start_date), ("end_date", end_date)):
+            if not isinstance(value, str) or not DATE_RE.match(value):
+                raise ValueError(f"{field} must look like 2026-10-31.")
+            datetime.strptime(value, "%Y-%m-%d")  # rejects 2026-13-45
+        if start_date > end_date:
+            raise ValueError("start_date must not be after end_date.")
+        metric_list = self._analytics_list(metrics, "metrics", ANALYTICS_NAME_RE, required=True)
+        dimension_list = self._analytics_list(dimensions, "dimensions", ANALYTICS_NAME_RE)
+        sort_list = self._analytics_list(sort, "sort", ANALYTICS_SORT_RE)
+        filter_list = self._analytics_filters(filters)
+        if max_results is not None and max_results < 1:
+            raise ValueError("max_results must be 1 or more.")
+        if start_index is not None and start_index < 1:
+            raise ValueError("start_index must be 1 or more.")
+        response = self._request(
+            YOUTUBE_ANALYTICS_BASE,
+            "/reports",
+            query={
+                "ids": "channel==MINE",
+                "startDate": start_date,
+                "endDate": end_date,
+                "metrics": ",".join(metric_list),
+                "dimensions": ",".join(dimension_list) or None,
+                "filters": ";".join(filter_list) or None,
+                "sort": ",".join(sort_list) or None,
+                "maxResults": max_results,
+                "startIndex": start_index,
+            },
+        )
+        rows = response.get("rows", [])
+        return {
+            "columns": [header.get("name") for header in response.get("columnHeaders", [])],
+            "rows": rows,
+            "row_count": len(rows),
+            "query": {
+                "start_date": start_date,
+                "end_date": end_date,
+                "metrics": metric_list,
+                "dimensions": dimension_list,
+                "filters": filter_list,
+                "sort": sort_list,
+            },
+        }
+
     def list_captions(self, video_id: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
@@ -1357,6 +1458,50 @@ class McpServer:
                         "image_path": {"type": "string"},
                     },
                     "required": ["video_id", "image_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_analytics_query",
+                "description": (
+                    "Free YouTube Analytics query for your channel (own quota, not the Data API quota). "
+                    "Rows come back as lists in the order of 'columns' (dimensions first, then metrics). "
+                    "Examples: top videos = dimensions ['video'], metrics ['views','estimatedMinutesWatched'], "
+                    "sort '-views', max_results 10; traffic sources = dimensions ['insightTrafficSourceType'], "
+                    "metrics ['views']; countries = dimensions ['country']; daily trend = dimensions ['day']; "
+                    "retention of one video = dimensions ['elapsedVideoTimeRatio'], metrics "
+                    "['audienceWatchRatio'], filters 'video==VIDEO_ID'. Unsupported metric/dimension "
+                    "combinations are rejected by Google with an explanation."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                        "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+                        "metrics": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "description": "For example views, estimatedMinutesWatched, averageViewDuration, likes, subscribersGained.",
+                        },
+                        "dimensions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "For example day, month, video, country, ageGroup, gender, deviceType, insightTrafficSourceType.",
+                        },
+                        "filters": {
+                            "type": "string",
+                            "description": "name==value pairs joined by ';', for example 'video==ID;country==DE'.",
+                        },
+                        "sort": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Column names, '-' prefix for descending, for example ['-views'].",
+                        },
+                        "max_results": {"type": "integer", "minimum": 1},
+                        "start_index": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["start_date", "end_date", "metrics"],
                     "additionalProperties": False,
                 },
             },
@@ -1765,6 +1910,17 @@ class McpServer:
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
+        if name == "youtube_analytics_query":
+            return self.youtube.analytics_query(
+                arguments["start_date"],
+                arguments["end_date"],
+                arguments["metrics"],
+                arguments.get("dimensions"),
+                arguments.get("filters"),
+                arguments.get("sort"),
+                arguments.get("max_results"),
+                arguments.get("start_index"),
+            )
         if name == "youtube_quota_status":
             return self.youtube.quota.status()
         if name == "youtube_list_playlists":

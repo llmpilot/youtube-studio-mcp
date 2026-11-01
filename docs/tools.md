@@ -29,6 +29,7 @@ The server exposes these MCP tools.
 | `youtube_update_caption` | Replace a track's content and/or draft status (450 units). |
 | `youtube_delete_caption` | Delete a caption track (50 units). |
 | `youtube_download_caption` | Download a track as srt/vtt/sbv/scc/ttml, optionally saved to a file (200 units). |
+| `youtube_analytics_query` | Free YouTube Analytics query: `start_date`, `end_date`, `metrics`, optional `dimensions`, `filters`, `sort`, `max_results`, `start_index`. Returns `columns` and compact `rows`. Own quota, no Data API units. |
 | `youtube_channel_analytics` | Read channel-level analytics for a date range. |
 | `youtube_video_analytics` | Read daily analytics for one video across a date range. |
 | `youtube_post_comment` | Post a top-level comment on a video. |
@@ -59,7 +60,7 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 
 | Hint | Tools |
 | --- | --- |
-| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_channel_comments`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_channel_comments`, `youtube_analytics_query`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
 | `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail`, `youtube_update_caption`, `youtube_delete_caption`, `youtube_update_playlist`, `youtube_delete_playlist` |
 | additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_create_playlist`, `youtube_reply_to_comment`, `youtube_add_playlist_item`, `youtube_move_playlist_item`, `youtube_download_caption` (may write a local file) |
 
@@ -87,3 +88,16 @@ The counter is saved in `secrets/quota_usage.json` (next to the token) so restar
 It is an estimate: other apps using the same Google Cloud project and failed calls are not included.
 Settings: `YOUTUBE_DAILY_QUOTA` (default 10000, for example after a quota increase) and
 `YOUTUBE_QUOTA_FILE`.
+
+### Analytics examples
+
+```text
+Top 10 videos of the last 28 days:   dimensions [video], metrics [views, estimatedMinutesWatched], sort [-views], max_results 10
+Where do viewers come from:          dimensions [insightTrafficSourceType], metrics [views]
+Daily trend:                         dimensions [day], metrics [views, subscribersGained]
+Countries:                           dimensions [country], metrics [views], sort [-views]
+Retention curve of one video:        dimensions [elapsedVideoTimeRatio], metrics [audienceWatchRatio], filters "video==VIDEO_ID"
+```
+
+Metric, dimension and filter names are validated locally (letters and digits only); Google rejects
+unsupported combinations with an explanation, which is passed through.
