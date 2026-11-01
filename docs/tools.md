@@ -59,3 +59,13 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 | additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_create_playlist`, `youtube_add_playlist_item`, `youtube_move_playlist_item`, `youtube_download_caption` (may write a local file) |
 
 New tools must be added to `_TOOL_HINTS` in `scripts/server.py`; a test fails otherwise.
+
+## Errors
+
+Failures inside a tool (API errors, bad input, missing files, network problems) come back as a normal
+tool result with `isError: true` and a message that says what to do next, so the assistant can react
+instead of seeing a protocol failure. Examples: exhausted quota (`quotaExceeded`) explains the daily
+reset, an expired or revoked login (`invalid_grant`) points to `scripts/auth.py auth`, and 404s remind
+that video, playlist, playlist item and caption ids are different. The original HTTP status, reason and
+message always follow under `Details:`. Only protocol problems (unknown method, unknown tool) are
+JSON-RPC errors.

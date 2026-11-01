@@ -152,6 +152,39 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
 
 
+class ApiError(RuntimeError):
+    """HTTP error from a Google API; keeps status and reason for hints and retries."""
+
+    def __init__(self, status: int, message: str, reason: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+
+
+def parse_api_error(status: int, body: str, fallback: str = "") -> ApiError:
+    """Build an ApiError from a Google error body.
+
+    Handles the API shape {"error": {"message", "errors": [{"reason"}]}} and the
+    OAuth token endpoint shape {"error": "invalid_grant", "error_description": ...}.
+    """
+    message, reason = body or fallback, None
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        parsed = None
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message") or message
+        errors = error.get("errors")
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            reason = errors[0].get("reason")
+        reason = reason or error.get("status")
+    elif isinstance(error, str):
+        reason = error
+        message = parsed.get("error_description") or error
+    return ApiError(status, message, reason)
+
+
 def http_json(
     url: str,
     *,
@@ -168,42 +201,7 @@ def http_json(
             return json.loads(body) if body else {}  # DELETE answers 204 No Content
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = {"error": {"message": body or str(exc)}}
-        raise RuntimeError(parsed.get("error", {}).get("message", body or str(exc))) from exc
-
-
-def http_empty(
-    url: str,
-    *,
-    method: str = "POST",
-    headers: dict[str, str] | None = None,
-    data: bytes | None = None,
-) -> dict[str, Any]:
-    request = urllib.request.Request(url, data=data, method=method)
-    for key, value in (headers or {}).items():
-        request.add_header(key, value)
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = {"error": {"message": body or str(exc)}}
-        raise RuntimeError(parsed.get("error", {}).get("message", body or str(exc))) from exc
-
-
-class ApiError(RuntimeError):
-    """HTTP error from a Google API; keeps the status code for retry decisions."""
-
-    def __init__(self, status: int, message: str):
-        super().__init__(message)
-        self.status = status
+        raise parse_api_error(exc.code, body, str(exc)) from exc
 
 
 def http_raw(
@@ -225,12 +223,60 @@ def http_raw(
         body = exc.read()
         if exc.code == 308:
             return 308, exc.headers, body
-        text = body.decode("utf-8", errors="replace")
-        try:
-            message = json.loads(text).get("error", {}).get("message", text)
-        except (json.JSONDecodeError, AttributeError):
-            message = text or str(exc)
-        raise ApiError(exc.code, message) from exc
+        raise parse_api_error(exc.code, body.decode("utf-8", errors="replace"), str(exc)) from exc
+
+
+_QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"}
+_REAUTH = "Run `python scripts/auth.py auth` in the youtube-studio-mcp folder, then reconnect the server."
+
+
+def explain_error(exc: BaseException) -> str:
+    """Turn any exception raised by a tool into a message that says what to do next."""
+    if isinstance(exc, ApiError):
+        reason, status = exc.reason or "", exc.status
+        detail = f"HTTP {status}" + (f" {reason}" if reason else "") + f": {exc}"
+        if reason in _QUOTA_REASONS:
+            hint = (
+                "The YouTube API quota is used up (default 10,000 units per day, resets at midnight "
+                "Pacific Time). Try again tomorrow, or request more quota in the Google Cloud console. "
+                "Uploads cost 1,600 units, captions 50-450, most reads 1."
+            )
+        elif reason == "invalid_grant":
+            hint = (
+                "Google rejected the saved login (revoked, expired or password changed). "
+                "OAuth apps in 'Testing' mode expire after 7 days. " + _REAUTH
+            )
+        elif status == 401 or reason in {"authError", "invalid_client", "UNAUTHENTICATED"}:
+            hint = "The login is missing or invalid. " + _REAUTH
+        elif reason in {"insufficientPermissions", "ACCESS_NOT_CONFIGURED", "accessNotConfigured"}:
+            hint = (
+                "Missing permission or API. Check that YouTube Data API v3 and YouTube Analytics API "
+                "are enabled in the Google Cloud project and that all scopes were granted. " + _REAUTH
+            )
+        elif reason in {"commentsDisabled", "forbidden"} or status == 403:
+            hint = "YouTube refused this action (for example not the owner, comments disabled, or a restricted feature)."
+        elif status == 404 or reason in {"videoNotFound", "playlistNotFound", "notFound", "captionNotFound"}:
+            hint = "Not found. Check the ID (video, playlist, playlist item and caption ids are different things)."
+        elif reason == "uploadLimitExceeded":
+            hint = "The channel hit YouTube's upload limit. Try again later."
+        elif status >= 500:
+            hint = "YouTube had a temporary problem. Try again in a minute."
+        else:
+            hint = "YouTube rejected the request."
+        return f"{hint}\n\nDetails: {detail}"
+    if isinstance(exc, KeyError):
+        return f"Missing required argument: {exc.args[0]}"
+    if isinstance(exc, ValueError):
+        return f"Invalid input: {exc}"
+    if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)):
+        return f"Network problem while contacting Google: {getattr(exc, 'reason', exc)}. Check the connection and try again."
+    if isinstance(exc, RuntimeError):
+        return str(exc)
+    return f"Unexpected error ({type(exc).__name__}): {exc}"
+
+
+class UnknownTool(RuntimeError):
+    """Protocol-level error: the client called a tool that does not exist."""
 
 
 @dataclass
@@ -1420,7 +1466,7 @@ class McpServer:
             return self.youtube.list_comments(
                 arguments["video_id"], int(arguments.get("max_results", 20))
             )
-        raise RuntimeError(f"Unknown tool: {name}")
+        raise UnknownTool(f"Unknown tool: {name}")
 
     # "ndjson" (MCP stdio standard: one JSON object per line) or "headers" (Content-Length).
     _framing = "headers"
@@ -1494,7 +1540,17 @@ class McpServer:
                     self._success(message_id, {"tools": self.tools})
                 elif method == "tools/call":
                     params = message.get("params", {})
-                    result = self._call_tool(params["name"], params.get("arguments", {}))
+                    try:
+                        result = self._call_tool(params["name"], params.get("arguments", {}))
+                    except UnknownTool as exc:
+                        self._error(message_id, -32602, str(exc))
+                        continue
+                    except Exception as exc:  # noqa: BLE001 - tool failures are results, not protocol errors
+                        self._success(
+                            message_id,
+                            {"content": [text_content(explain_error(exc))], "isError": True},
+                        )
+                        continue
                     self._success(message_id, {"content": [text_content(json.dumps(result, indent=2))]})
                 else:
                     self._error(message_id, -32601, f"Method not found: {method}")
