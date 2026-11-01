@@ -93,6 +93,79 @@ class DeleteAndModerateTests(unittest.TestCase):
         self.assertEqual(request.data, b"")
 
 
+class ThreadListingTests(unittest.TestCase):
+    def setUp(self):
+        self.client = make_client()
+
+    def query(self, call, *args, **kwargs):
+        with mock.patch.object(self.client, "_request", return_value={"items": []}) as req:
+            call(*args, **kwargs)
+        return req.call_args.kwargs["query"]
+
+    def test_video_threads_keep_old_defaults(self):
+        query = self.query(self.client.list_comments, "vid")
+        self.assertEqual(query["part"], "snippet")
+        self.assertEqual(query["videoId"], "vid")
+        self.assertEqual(query["order"], "relevance")
+        self.assertEqual(query["maxResults"], 20)
+        self.assertNotIn("allThreadsRelatedToChannelId", query)
+        self.assertIsNone(query["pageToken"])
+        self.assertIsNone(query["searchTerms"])
+
+    def test_video_threads_paging_search_and_filters(self):
+        query = self.query(
+            self.client.list_comments, "vid", 500, "TOKEN", "time", "etf", "heldForReview", True
+        )
+        self.assertEqual(query["maxResults"], 100)
+        self.assertEqual(query["pageToken"], "TOKEN")
+        self.assertEqual(query["order"], "time")
+        self.assertEqual(query["searchTerms"], "etf")
+        self.assertEqual(query["moderationStatus"], "heldForReview")
+        self.assertEqual(query["part"], "snippet,replies")
+
+    def test_blank_search_terms_are_dropped(self):
+        self.assertIsNone(self.query(self.client.list_comments, "vid", search_terms="")["searchTerms"])
+
+    def test_channel_threads_look_up_channel_first(self):
+        responses = [{"items": [{"id": "UC123"}]}, {"items": []}]
+        with mock.patch.object(self.client, "_request", side_effect=responses) as req:
+            self.client.list_channel_comments(max_results=50)
+        lookup, threads = req.call_args_list
+        self.assertEqual(lookup.args[1], "/channels")
+        self.assertEqual(lookup.kwargs["query"], {"part": "id", "mine": "true"})
+        query = threads.kwargs["query"]
+        self.assertEqual(threads.args[1], "/commentThreads")
+        self.assertEqual(query["allThreadsRelatedToChannelId"], "UC123")
+        self.assertNotIn("videoId", query)
+        self.assertEqual(query["order"], "time")
+        self.assertEqual(query["maxResults"], 50)
+
+    def test_channel_threads_without_channel(self):
+        with mock.patch.object(self.client, "_request", return_value={"items": []}):
+            with self.assertRaisesRegex(RuntimeError, "No authenticated"):
+                self.client.list_channel_comments()
+
+    def test_invalid_order_or_filter_sends_nothing(self):
+        with mock.patch.object(self.client, "_request") as req:
+            with self.assertRaisesRegex(ValueError, "order"):
+                self.client.list_comments("vid", order="newest")
+            with self.assertRaisesRegex(ValueError, "moderation_status"):
+                self.client.list_comments("vid", moderation_status="spam")
+            with self.assertRaisesRegex(ValueError, "order"):
+                self.client.list_channel_comments(order="top")
+        req.assert_not_called()
+
+    def test_dispatch(self):
+        srv = server.McpServer()
+        with mock.patch.object(srv.youtube, "list_comments", return_value={}) as lc:
+            srv._call_tool("youtube_list_comments", {"video_id": "v"})
+        lc.assert_called_once_with("v", 20, None, "relevance", None, None, False)
+        with mock.patch.object(srv.youtube, "list_channel_comments", return_value={}) as ch:
+            srv._call_tool("youtube_list_channel_comments",
+                           {"page_token": "T", "moderation_status": "likelySpam", "max_results": 5})
+        ch.assert_called_once_with(5, "T", "time", None, "likelySpam", False)
+
+
 class DispatchTests(unittest.TestCase):
     def test_dispatch(self):
         srv = server.McpServer()

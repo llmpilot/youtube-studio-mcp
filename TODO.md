@@ -34,7 +34,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 ## Kommentare
 
 - [x] **Antworten und Moderation** – auf Kommentar antworten, Antworten lesen, Kommentar löschen, `setModerationStatus` (Spam = Status `rejected`; `comments.markAsSpam` ist bei Google veraltet) (`feat: comment replies and moderation`)
-- [ ] **Kanalweite Kommentare und Paginierung** – `allThreadsRelatedToChannelId`, `page_token`, Suchbegriff, Sortierung (`feat: channel-wide comments with pagination`)
+- [x] **Kanalweite Kommentare und Paginierung** – `allThreadsRelatedToChannelId`, `page_token`, Suchbegriff, Sortierung (`feat: channel-wide comments with pagination`)
 
 ## Kanal
 

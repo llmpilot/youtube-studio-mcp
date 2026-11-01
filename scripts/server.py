@@ -35,6 +35,8 @@ LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 CAPTION_FORMATS = ("srt", "vtt", "sbv", "scc", "ttml")
 MODERATION_STATUSES = ("published", "heldForReview", "rejected")
 MAX_COMMENT_LENGTH = 10_000
+COMMENT_ORDERS = ("time", "relevance")
+THREAD_MODERATION_FILTERS = ("published", "heldForReview", "likelySpam")
 # Hints for MCP clients so they can auto-allow reads and confirm writes.
 # (title, readOnly, destructive, idempotent, openWorld)
 #   destructive = overwrites or removes existing data; additive writes are not.
@@ -61,6 +63,7 @@ _TOOL_HINTS = {
     "youtube_list_replies": ("List replies", True, False, True, True),
     "youtube_delete_comment": ("Delete comment", False, True, True, True),
     "youtube_moderate_comments": ("Moderate comments", False, True, True, True),
+    "youtube_list_channel_comments": ("List channel comments", True, False, True, True),
     "youtube_list_captions": ("List captions", True, False, True, True),
     "youtube_upload_caption": ("Upload caption", False, False, False, True),
     "youtube_update_caption": ("Update caption", False, True, True, True),
@@ -1147,18 +1150,89 @@ class YouTubeClient:
             body=body,
         )
 
-    def list_comments(self, video_id: str, max_results: int = 20) -> dict[str, Any]:
+    @staticmethod
+    def _check_thread_filters(order: str, moderation_status: str | None) -> None:
+        if order not in COMMENT_ORDERS:
+            raise ValueError(f"order must be one of {', '.join(COMMENT_ORDERS)}.")
+        if moderation_status is not None and moderation_status not in THREAD_MODERATION_FILTERS:
+            raise ValueError(
+                f"moderation_status must be one of {', '.join(THREAD_MODERATION_FILTERS)}."
+            )
+
+    def _comment_threads(
+        self,
+        target: dict[str, str],
+        *,
+        max_results: int,
+        page_token: str | None,
+        order: str,
+        search_terms: str | None,
+        moderation_status: str | None,
+        include_replies: bool,
+    ) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE,
             "/commentThreads",
             query={
-                "part": "snippet",
-                "videoId": video_id,
+                "part": "snippet,replies" if include_replies else "snippet",
+                **target,
                 "maxResults": max(1, min(max_results, 100)),
-                "order": "relevance",
+                "pageToken": page_token,
+                "order": order,
+                "searchTerms": search_terms or None,
+                "moderationStatus": moderation_status,
                 "textFormat": "plainText",
             },
         )
+
+    def list_comments(
+        self,
+        video_id: str,
+        max_results: int = 20,
+        page_token: str | None = None,
+        order: str = "relevance",
+        search_terms: str | None = None,
+        moderation_status: str | None = None,
+        include_replies: bool = False,
+    ) -> dict[str, Any]:
+        self._check_thread_filters(order, moderation_status)
+        return self._comment_threads(
+            {"videoId": video_id},
+            max_results=max_results,
+            page_token=page_token,
+            order=order,
+            search_terms=search_terms,
+            moderation_status=moderation_status,
+            include_replies=include_replies,
+        )
+
+    def list_channel_comments(
+        self,
+        max_results: int = 20,
+        page_token: str | None = None,
+        order: str = "time",
+        search_terms: str | None = None,
+        moderation_status: str | None = None,
+        include_replies: bool = False,
+    ) -> dict[str, Any]:
+        """Comment threads on all videos of the authenticated channel, newest first by default."""
+        self._check_thread_filters(order, moderation_status)
+        channel_id = self._own_channel_id()
+        return self._comment_threads(
+            {"allThreadsRelatedToChannelId": channel_id},
+            max_results=max_results,
+            page_token=page_token,
+            order=order,
+            search_terms=search_terms,
+            moderation_status=moderation_status,
+            include_replies=include_replies,
+        )
+
+    def _own_channel_id(self) -> str:
+        items = self._request(YOUTUBE_API_BASE, "/channels", query={"part": "id", "mine": "true"}).get("items", [])
+        if not items:
+            raise RuntimeError("No authenticated YouTube channel was returned.")
+        return items[0]["id"]
 
 
 class McpServer:
@@ -1581,14 +1655,43 @@ class McpServer:
             },
             {
                 "name": "youtube_list_comments",
-                "description": "List top-level comment threads on one of your YouTube videos.",
+                "description": (
+                    "List comment threads on one video, with paging, sorting and search. Each thread "
+                    "has the thread id and topLevelComment.id (use that one for replies and moderation). "
+                    "Costs 1 quota unit per page."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "video_id": {"type": "string"},
                         "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "page_token": {"type": "string", "description": "nextPageToken of the previous page."},
+                        "order": {"type": "string", "enum": list(COMMENT_ORDERS), "description": "Default relevance."},
+                        "search_terms": {"type": "string"},
+                        "moderation_status": {"type": "string", "enum": list(THREAD_MODERATION_FILTERS)},
+                        "include_replies": {"type": "boolean", "description": "Embed up to 5 replies per thread."},
                     },
                     "required": ["video_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_list_channel_comments",
+                "description": (
+                    "List comment threads across all videos of your channel (newest first by default), "
+                    "with paging, search and a moderation filter such as 'heldForReview' or 'likelySpam'. "
+                    "Costs 2 quota units (channel lookup + page)."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "page_token": {"type": "string"},
+                        "order": {"type": "string", "enum": list(COMMENT_ORDERS), "description": "Default time."},
+                        "search_terms": {"type": "string"},
+                        "moderation_status": {"type": "string", "enum": list(THREAD_MODERATION_FILTERS)},
+                        "include_replies": {"type": "boolean"},
+                    },
                     "additionalProperties": False,
                 },
             },
@@ -1752,7 +1855,22 @@ class McpServer:
             return self.youtube.post_comment(arguments["video_id"], arguments["text"])
         if name == "youtube_list_comments":
             return self.youtube.list_comments(
-                arguments["video_id"], int(arguments.get("max_results", 20))
+                arguments["video_id"],
+                int(arguments.get("max_results", 20)),
+                arguments.get("page_token"),
+                arguments.get("order", "relevance"),
+                arguments.get("search_terms"),
+                arguments.get("moderation_status"),
+                bool(arguments.get("include_replies", False)),
+            )
+        if name == "youtube_list_channel_comments":
+            return self.youtube.list_channel_comments(
+                int(arguments.get("max_results", 20)),
+                arguments.get("page_token"),
+                arguments.get("order", "time"),
+                arguments.get("search_terms"),
+                arguments.get("moderation_status"),
+                bool(arguments.get("include_replies", False)),
             )
         raise UnknownTool(f"Unknown tool: {name}")
 

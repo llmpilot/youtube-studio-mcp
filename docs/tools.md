@@ -32,7 +32,8 @@ The server exposes these MCP tools.
 | `youtube_channel_analytics` | Read channel-level analytics for a date range. |
 | `youtube_video_analytics` | Read daily analytics for one video across a date range. |
 | `youtube_post_comment` | Post a top-level comment on a video. |
-| `youtube_list_comments` | List top-level comment threads for a video. |
+| `youtube_list_comments` | List comment threads for a video with paging (`page_token`), `order`, `search_terms`, `moderation_status` and optional embedded replies. |
+| `youtube_list_channel_comments` | Same for all videos of your channel, newest first; filter `heldForReview` or `likelySpam` to find comments to moderate (2 quota units). |
 
 ## Example prompts
 
@@ -58,7 +59,7 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 
 | Hint | Tools |
 | --- | --- |
-| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_channel_comments`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
 | `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail`, `youtube_update_caption`, `youtube_delete_caption`, `youtube_update_playlist`, `youtube_delete_playlist` |
 | additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_create_playlist`, `youtube_reply_to_comment`, `youtube_add_playlist_item`, `youtube_move_playlist_item`, `youtube_download_caption` (may write a local file) |
 

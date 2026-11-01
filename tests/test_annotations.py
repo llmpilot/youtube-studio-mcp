@@ -16,6 +16,7 @@ READ_ONLY = {
     "youtube_list_playlist_items",
     "youtube_quota_status",
     "youtube_list_replies",
+    "youtube_list_channel_comments",
 }
 WRITES = {
     "youtube_reply_to_comment",

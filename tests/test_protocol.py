@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "youtube_upload_video",
     "youtube_upload_thumbnail",
     "youtube_quota_status",
+    "youtube_list_channel_comments",
     "youtube_reply_to_comment",
     "youtube_list_replies",
     "youtube_delete_comment",
