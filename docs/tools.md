@@ -34,3 +34,15 @@ Update video VIDEO_ID with this title, description, and tags.
 ```text
 Upload /absolute/path/to/thumbnail.png as the thumbnail for VIDEO_ID.
 ```
+
+## Tool annotations
+
+Every tool carries MCP annotations so clients can auto-allow reads and confirm writes:
+
+| Hint | Tools |
+| --- | --- |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail` |
+| additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment` |
+
+New tools must be added to `_TOOL_HINTS` in `scripts/server.py`; a test fails otherwise.

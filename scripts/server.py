@@ -30,6 +30,35 @@ YOUTUBE_ANALYTICS_BASE = "https://youtubeanalytics.googleapis.com/v2"
 PRIVACY_STATUSES = ("private", "unlisted", "public")
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB
 UPLOAD_RETRIES = 3
+# Hints for MCP clients so they can auto-allow reads and confirm writes.
+# (title, readOnly, destructive, idempotent, openWorld)
+#   destructive = overwrites or removes existing data; additive writes are not.
+#   openWorld   = talks to YouTube/Google rather than only local files.
+_TOOL_HINTS = {
+    "youtube_auth_status": ("Check YouTube auth status", True, False, True, False),
+    "youtube_start_auth": ("Start YouTube authorization", True, False, False, False),
+    "youtube_channel_overview": ("Channel overview", True, False, True, True),
+    "youtube_list_videos": ("List videos", True, False, True, True),
+    "youtube_get_video": ("Get video", True, False, True, True),
+    "youtube_update_video": ("Update video metadata", False, True, True, True),
+    "youtube_upload_video": ("Upload video", False, False, False, True),
+    "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
+    "youtube_channel_analytics": ("Channel analytics", True, False, True, True),
+    "youtube_video_analytics": ("Video analytics", True, False, True, True),
+    "youtube_post_comment": ("Post comment", False, False, False, True),
+    "youtube_list_comments": ("List comments", True, False, True, True),
+}
+
+
+def tool_annotations(name: str) -> dict[str, Any]:
+    title, read_only, destructive, idempotent, open_world = _TOOL_HINTS[name]
+    annotations: dict[str, Any] = {"title": title, "readOnlyHint": read_only, "openWorldHint": open_world}
+    if not read_only:  # destructive/idempotent hints only apply to writes
+        annotations["destructiveHint"] = destructive
+        annotations["idempotentHint"] = idempotent
+    return annotations
+
+
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.force-ssl",
@@ -778,6 +807,8 @@ class McpServer:
                 },
             },
         ]
+        for tool in self.tools:
+            tool["annotations"] = tool_annotations(tool["name"])
 
     def _start_auth_payload(self) -> dict[str, Any]:
         status = self.auth.auth_status()
