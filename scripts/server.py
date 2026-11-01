@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import mimetypes
 import os
@@ -14,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -458,6 +460,7 @@ class YouTubeClient:
     def __init__(self, auth: AuthConfig, quota: QuotaTracker | None = None):
         self.auth = auth
         self.quota = quota or QuotaTracker()
+        self._plan: dict[str, Any] | None = None  # set while a dry run is active
 
     def _refresh_token(self, token: dict[str, Any]) -> dict[str, Any]:
         client = self.auth.load_client_config()
@@ -493,6 +496,69 @@ class YouTubeClient:
             token = self._refresh_token(token)
         return token["access_token"]
 
+    @contextmanager
+    def dry_run(self):
+        """While active, writes are recorded in the yielded plan instead of being sent.
+
+        Reads still run (validation and before/after need them); only non-GET requests,
+        uploads and local file writes are intercepted.
+        """
+        plan: dict[str, Any] = {"requests": [], "changes": {}, "targets": []}
+        self._plan = plan
+        try:
+            yield plan
+        finally:
+            self._plan = None
+
+    def _note_changes(self, before: dict[str, Any], after: dict[str, Any]) -> None:
+        if self._plan is None:
+            return
+        changes: dict[str, Any] = {}
+        for section, new in after.items():
+            old = before.get(section, {})
+            for key in sorted(set(old) | set(new)):
+                if old.get(key) != new.get(key):
+                    changes[f"{section}.{key}"] = {"before": old.get(key), "after": new.get(key)}
+        self._plan["changes"] = changes
+
+    def _preview_targets(self, kind: str, ids: list[str]) -> None:
+        """In a dry run, look up what the ids point to so they can be checked before deleting."""
+        if self._plan is None:
+            return
+        paths = {"comments": "/comments", "playlists": "/playlists",
+                 "playlistItems": "/playlistItems", "captions": "/captions"}
+        parts = {"comments": "snippet", "playlists": "snippet,status",
+                 "playlistItems": "snippet", "captions": "snippet"}
+        items = self._request(
+            YOUTUBE_API_BASE,
+            paths[kind],
+            query={
+                "part": parts[kind],
+                "id": ",".join(ids),
+                "textFormat": "plainText" if kind == "comments" else None,
+            },
+        ).get("items", [])
+
+        def brief(item: dict[str, Any]) -> dict[str, Any]:
+            snippet = item.get("snippet", {})
+            if kind == "comments":
+                return {"author": snippet.get("authorDisplayName"),
+                        "text": (snippet.get("textDisplay") or "")[:200],
+                        "videoId": snippet.get("videoId")}
+            if kind == "playlists":
+                return {"title": snippet.get("title"),
+                        "privacyStatus": item.get("status", {}).get("privacyStatus")}
+            if kind == "playlistItems":
+                return {"title": snippet.get("title"), "playlistId": snippet.get("playlistId"),
+                        "position": snippet.get("position")}
+            return {"language": snippet.get("language"), "name": snippet.get("name"),
+                    "videoId": snippet.get("videoId")}
+
+        found = {item["id"]: brief(item) for item in items}
+        self._plan["targets"] = [
+            {"id": i, **found.get(i, {"warning": "not found"})} for i in ids
+        ]
+
     def _request(
         self,
         base_url: str,
@@ -510,6 +576,18 @@ class YouTubeClient:
             cleaned = {key: value for key, value in query.items() if value is not None}
             query_string = "?" + urllib.parse.urlencode(cleaned, doseq=True)
         url = f"{base_url}{path}{query_string}"
+        if self._plan is not None and method != "GET":
+            self._plan["requests"].append(
+                {
+                    "method": method,
+                    "endpoint": path,
+                    "query": {k: v for k, v in (query or {}).items() if v is not None},
+                    **({"body": body} if body is not None else {}),
+                    **({"payload_bytes": len(raw_data)} if raw_data else {}),
+                    "quota_cost": request_cost(base_url, path, method),
+                }
+            )
+            return {}
         request_headers = {
             "Authorization": f"Bearer {self._access_token()}",
         }
@@ -614,6 +692,7 @@ class YouTubeClient:
         if scheduled and privacy_status not in (None, "private"):
             raise ValueError("A scheduled video must be private until publish_at.")
         existing = self.get_video(video_id)
+        before = copy.deepcopy({"snippet": existing["snippet"], "status": existing["status"]})
         snippet = existing["snippet"]
         status = existing["status"]
         snippet["title"] = title if title is not None else snippet.get("title", "")
@@ -638,6 +717,7 @@ class YouTubeClient:
             "snippet": snippet,
             "status": status,
         }
+        self._note_changes(before, {"snippet": snippet, "status": status})
         return self._request(
             YOUTUBE_API_BASE,
             "/videos",
@@ -708,6 +788,18 @@ class YouTubeClient:
         }
         if scheduled:
             metadata["status"]["publishAt"] = scheduled
+        if self._plan is not None:
+            self._plan["requests"].append(
+                {
+                    "method": "POST",
+                    "endpoint": "upload/videos (resumable)",
+                    "file": str(path),
+                    "size_bytes": size,
+                    "metadata": metadata,
+                    "quota_cost": VIDEO_UPLOAD_COST,
+                }
+            )
+            return {}
         session_url = self._start_resumable_upload(metadata, size, mime)
         video = self._send_resumable_upload(session_url, path, size, mime)
         self.quota.add(VIDEO_UPLOAD_COST, "POST /videos (upload)")
@@ -878,6 +970,10 @@ class YouTubeClient:
             if privacy_status is not None
             else existing.get("status", {}).get("privacyStatus", "private")
         }
+        self._note_changes(
+            {"snippet": old, "status": existing.get("status", {})},
+            {"snippet": snippet, "status": status},
+        )
         return self._request(
             YOUTUBE_API_BASE,
             "/playlists",
@@ -887,6 +983,7 @@ class YouTubeClient:
         )
 
     def delete_playlist(self, playlist_id: str) -> dict[str, Any]:
+        self._preview_targets("playlists", [playlist_id])
         self._request(YOUTUBE_API_BASE, "/playlists", method="DELETE", query={"id": playlist_id})
         return {"deleted": playlist_id}
 
@@ -911,6 +1008,7 @@ class YouTubeClient:
 
     def remove_playlist_item(self, item_id: str) -> dict[str, Any]:
         """item_id is the playlist item id (from list_playlist_items), not the video id."""
+        self._preview_targets("playlistItems", [item_id])
         self._request(YOUTUBE_API_BASE, "/playlistItems", method="DELETE", query={"id": item_id})
         return {"removed": item_id}
 
@@ -967,6 +1065,7 @@ class YouTubeClient:
         )
 
     def delete_comment(self, comment_id: str) -> dict[str, Any]:
+        self._preview_targets("comments", [comment_id])
         self._request(YOUTUBE_API_BASE, "/comments", method="DELETE", query={"id": comment_id})
         return {"deleted": comment_id}
 
@@ -981,6 +1080,7 @@ class YouTubeClient:
             raise ValueError(f"status must be one of {', '.join(MODERATION_STATUSES)}.")
         if ban_author and status != "rejected":
             raise ValueError("ban_author only works together with status 'rejected'.")
+        self._preview_targets("comments", comment_ids)
         self._request(
             YOUTUBE_API_BASE,
             "/comments/setModerationStatus",
@@ -1159,6 +1259,7 @@ class YouTubeClient:
         )
 
     def delete_caption(self, caption_id: str) -> dict[str, Any]:
+        self._preview_targets("captions", [caption_id])
         self._request(YOUTUBE_API_BASE, "/captions", method="DELETE", query={"id": caption_id})
         return {"deleted": caption_id}
 
@@ -1172,6 +1273,17 @@ class YouTubeClient:
             target = abs_path(output_path)
             if target.exists():
                 raise RuntimeError(f"{target} already exists; choose another output_path.")
+        if self._plan is not None:
+            self._plan["requests"].append(
+                {
+                    "method": "GET",
+                    "endpoint": f"/captions/{caption_id}",
+                    "format": fmt,
+                    "save_to": str(target) if target else "returned inline",
+                    "quota_cost": 200,
+                }
+            )
+            return {"format": fmt}
         text = self._request(
             YOUTUBE_API_BASE,
             f"/captions/{urllib.parse.quote(caption_id, safe='')}",
@@ -1843,6 +1955,14 @@ class McpServer:
         ]
         for tool in self.tools:
             tool["annotations"] = tool_annotations(tool["name"])
+            if not tool["annotations"]["readOnlyHint"]:
+                tool["inputSchema"]["properties"]["dry_run"] = {
+                    "type": "boolean",
+                    "description": (
+                        "Preview only: validates the input, runs read-only lookups and returns the planned "
+                        "request(s), before/after changes and the quota cost without changing anything."
+                    ),
+                }
 
     def _start_auth_payload(self) -> dict[str, Any]:
         status = self.auth.auth_status()
@@ -1873,6 +1993,30 @@ class McpServer:
         }
 
     def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments = dict(arguments or {})
+        requested = arguments.pop("dry_run", False)
+        # Anything that is not clearly "off" counts as a dry run: the safe side.
+        dry = requested not in (False, None, 0, "", "false", "False", "FALSE", "0")
+        hints = _TOOL_HINTS.get(name)
+        if not dry or hints is None or hints[1]:  # unknown tools fail in _dispatch; reads ignore the flag
+            return self._dispatch(name, arguments)
+        with self.youtube.dry_run() as plan:
+            self._dispatch(name, arguments)
+        result: dict[str, Any] = {
+            "dry_run": True,
+            "executed": False,
+            "tool": name,
+            "message": "Nothing was changed. Call again without dry_run to apply.",
+            "planned_requests": plan["requests"],
+            "quota_cost_estimate": sum(r.get("quota_cost", 0) for r in plan["requests"]),
+        }
+        if plan["changes"]:
+            result["changes"] = plan["changes"]
+        if plan["targets"]:
+            result["targets"] = plan["targets"]
+        return result
+
+    def _dispatch(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "youtube_auth_status":
             return self.auth.auth_status()
         if name == "youtube_start_auth":

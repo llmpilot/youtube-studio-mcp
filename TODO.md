@@ -9,7 +9,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 - [x] **Tool-Annotationen** – `readOnlyHint` / `destructiveHint` je Tool, damit Clients Schreibaktionen gezielt bestätigen lassen (`feat: add tool annotations`)
 - [x] **Fehler als Tool-Ergebnis** – API-Fehler mit `isError: true` statt JSON-RPC-Fehler; verständliche Meldung bei `quotaExceeded`, 401 und 403 (`fix: report API errors as tool results`)
 - [ ] **Protokoll-Aushandlung** – `protocolVersion` des Clients zurückgeben statt fester Version; `notifications/cancelled` ignorieren (`fix: negotiate protocol version`)
-- [ ] **Dry-Run für Schreibaktionen** – Parameter `dry_run`, zeigt die geplante Änderung als Vorher/Nachher (`feat: add dry_run to write tools`)
+- [x] **Dry-Run für Schreibaktionen** – Parameter `dry_run`, zeigt die geplante Änderung als Vorher/Nachher (`feat: add dry_run to write tools`)
 
 ## Video-Verwaltung (Data API v3)
 

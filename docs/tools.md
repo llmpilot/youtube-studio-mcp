@@ -101,3 +101,20 @@ Retention curve of one video:        dimensions [elapsedVideoTimeRatio], metrics
 
 Metric, dimension and filter names are validated locally (letters and digits only); Google rejects
 unsupported combinations with an explanation, which is passed through.
+
+## Dry run
+
+Every tool that changes something accepts `dry_run: true`. The server then validates the input, runs
+the read-only lookups it needs and returns what it *would* do, without sending any write:
+
+- `planned_requests`: method, endpoint, query and body of each write (uploads show file size and
+  metadata, thumbnails and caption files only their size) plus the quota cost,
+- `changes`: before/after for each changed field (`youtube_update_video`, `youtube_update_playlist`),
+- `targets`: what the ids point to for deletes, moderation and playlist item removal (author and text of
+  a comment, playlist title, ...), with a `not found` warning for unknown ids,
+- `quota_cost_estimate`: units the real call would cost.
+
+Nothing is sent, deleted or written to disk (`youtube_download_caption` does not create the file).
+The lookups themselves cost their normal quota (usually 1 unit). Read-only tools ignore the flag, and
+any value except `false`, `null`, `0` or an empty string counts as a dry run, so an unclear value never
+executes a write. Without the flag nothing changes.
