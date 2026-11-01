@@ -11,12 +11,13 @@ The server exposes these MCP tools.
 | `youtube_get_video` | Fetch metadata for a single video. |
 | `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. Also `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. |
 | `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it; optional `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. Costs 1,600 quota units. |
+| `youtube_delete_video` | Permanently delete a video (comments, statistics and captions go with it). Needs `confirm_title` equal to the current title; use `dry_run` first to see title, views and visibility (51 quota units). |
 | `youtube_upload_thumbnail` | Upload a local image as a custom thumbnail. |
 | `youtube_list_playlists` | List your playlists with privacy and item count (1 quota unit). |
 | `youtube_list_playlist_items` | List a playlist's videos in order, with item ids and positions (1 unit). |
 | `youtube_create_playlist` | Create a playlist, default `private` (50 quota units). |
 | `youtube_update_playlist` | Change title, description, language or privacy; other fields are kept (50 units). |
-| `youtube_delete_playlist`, `youtube_remove_playlist_item`, `youtube_delete_comment`, `youtube_moderate_comments` | Delete a playlist; its videos stay on the channel (50 units). |
+| `youtube_delete_playlist`, `youtube_remove_playlist_item`, `youtube_delete_comment`, `youtube_moderate_comments`, `youtube_delete_video` | Delete a playlist; its videos stay on the channel (50 units). |
 | `youtube_add_playlist_item` | Add a video to a playlist, optionally at a position (50 quota units). |
 | `youtube_remove_playlist_item` | Remove an entry by playlist item id (not video id); the video is kept (50 units). |
 | `youtube_move_playlist_item` | Move an entry to a new position; needs manual ordering (50 units). |

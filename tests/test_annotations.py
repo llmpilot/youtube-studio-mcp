@@ -20,6 +20,7 @@ READ_ONLY = {
     "youtube_analytics_query",
 }
 WRITES = {
+    "youtube_delete_video",
     "youtube_reply_to_comment",
     "youtube_delete_comment",
     "youtube_moderate_comments",
@@ -71,7 +72,7 @@ class AnnotationTests(unittest.TestCase):
             "youtube_update_caption", "youtube_delete_caption",
             "youtube_update_playlist", "youtube_delete_playlist",
             "youtube_remove_playlist_item",
-            "youtube_delete_comment", "youtube_moderate_comments",
+            "youtube_delete_comment", "youtube_moderate_comments", "youtube_delete_video",
         })
 
     def test_repeating_additive_writes_is_not_idempotent(self):

@@ -68,6 +68,7 @@ _TOOL_HINTS = {
     "youtube_list_videos": ("List videos", True, False, True, True),
     "youtube_get_video": ("Get video", True, False, True, True),
     "youtube_update_video": ("Update video metadata", False, True, True, True),
+    "youtube_delete_video": ("Delete video", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
     "youtube_analytics_query": ("Analytics query", True, False, True, True),
@@ -784,6 +785,30 @@ class YouTubeClient:
             query={"part": "snippet,status"},
             body=body,
         )
+
+    def delete_video(self, video_id: str, confirm_title: str | None = None) -> dict[str, Any]:
+        """Permanently delete a video. Needs confirm_title equal to the current title (not in a dry run)."""
+        video = self.get_video(video_id)
+        title = video["snippet"].get("title", "")
+        if self._plan is not None:
+            stats = video.get("statistics", {})
+            self._plan["targets"] = [
+                {
+                    "id": video_id,
+                    "title": title,
+                    "privacyStatus": video.get("status", {}).get("privacyStatus"),
+                    "publishedAt": video["snippet"].get("publishedAt"),
+                    "viewCount": stats.get("viewCount"),
+                    "commentCount": stats.get("commentCount"),
+                }
+            ]
+        elif (confirm_title or "").strip() != title.strip():
+            raise ValueError(
+                f"Not deleted. confirm_title must equal the video's title exactly; "
+                f"video {video_id} is titled {title!r}."
+            )
+        self._request(YOUTUBE_API_BASE, "/videos", method="DELETE", query={"id": video_id})
+        return {"deleted": video_id, "title": title}
 
     def upload_thumbnail(self, video_id: str, image_path: str) -> dict[str, Any]:
         path = abs_path(image_path)
@@ -1604,6 +1629,24 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_delete_video",
+                "description": (
+                    "PERMANENTLY delete one of your videos, including its comments, statistics and "
+                    "captions. This cannot be undone. Safety check: confirm_title must equal the video's "
+                    "current title exactly; without it nothing is deleted and the error shows the title. "
+                    "Use dry_run first to see the title, views and visibility. Costs 51 quota units."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "video_id": {"type": "string"},
+                        "confirm_title": {"type": "string", "description": "The video's exact current title."},
+                    },
+                    "required": ["video_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_upload_video",
                 "description": (
                     "Upload a local video file to the channel (resumable, chunked). Defaults to "
@@ -2119,6 +2162,8 @@ class McpServer:
                 public_stats_viewable=arguments.get("public_stats_viewable"),
                 contains_synthetic_media=arguments.get("contains_synthetic_media"),
             )
+        if name == "youtube_delete_video":
+            return self.youtube.delete_video(arguments["video_id"], arguments.get("confirm_title"))
         if name == "youtube_upload_video":
             return self.youtube.upload_video(
                 arguments["file_path"],
