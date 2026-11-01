@@ -9,8 +9,8 @@ The server exposes these MCP tools.
 | `youtube_channel_overview` | Fetch channel profile, branding, uploads playlist, and public statistics. |
 | `youtube_list_videos` | List recent uploads with metadata, status, statistics, and pagination. |
 | `youtube_get_video` | Fetch metadata for a single video. |
-| `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. |
-| `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it. Costs 1,600 quota units. |
+| `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. Also `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. |
+| `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it; optional `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. Costs 1,600 quota units. |
 | `youtube_upload_thumbnail` | Upload a local image as a custom thumbnail. |
 | `youtube_list_playlists` | List your playlists with privacy and item count (1 quota unit). |
 | `youtube_list_playlist_items` | List a playlist's videos in order, with item ids and positions (1 unit). |
@@ -118,3 +118,18 @@ Nothing is sent, deleted or written to disk (`youtube_download_caption` does not
 The lookups themselves cost their normal quota (usually 1 unit). Read-only tools ignore the flag, and
 any value except `false`, `null`, `0` or an empty string counts as a dry run, so an unclear value never
 executes a write. Without the flag nothing changes.
+
+## Video status fields
+
+`youtube_update_video` and `youtube_upload_video` accept these optional status fields; only the ones you
+pass are changed:
+
+| Argument | Meaning |
+| --- | --- |
+| `made_for_kids` | Self-declared "made for kids" (COPPA). YouTube may override it. |
+| `embeddable` | Allow embedding on other sites. |
+| `license` | `youtube` (standard) or `creativeCommon`. |
+| `public_stats_viewable` | Show like and view counts publicly. |
+| `contains_synthetic_media` | Disclose realistic altered or AI-generated content. |
+
+Booleans must be real booleans: `"false"` as text is rejected instead of being read as true.

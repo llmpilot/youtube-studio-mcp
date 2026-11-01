@@ -35,6 +35,20 @@ UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # must be a multiple of 256 KiB
 UPLOAD_RETRIES = 3
 LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 CAPTION_FORMATS = ("srt", "vtt", "sbv", "scc", "ttml")
+VIDEO_LICENSES = ("youtube", "creativeCommon")
+VIDEO_FLAG_SCHEMA = {
+    "made_for_kids": {
+        "type": "boolean",
+        "description": "Declare the video as made for kids (COPPA). Cannot be undone freely; YouTube may override it.",
+    },
+    "embeddable": {"type": "boolean", "description": "Allow embedding on other sites."},
+    "license": {"type": "string", "enum": list(VIDEO_LICENSES), "description": "'youtube' (standard) or 'creativeCommon'."},
+    "public_stats_viewable": {"type": "boolean", "description": "Show like and view counts publicly."},
+    "contains_synthetic_media": {
+        "type": "boolean",
+        "description": "Disclose realistic altered or synthetic (AI-generated) content.",
+    },
+}
 MODERATION_STATUSES = ("published", "heldForReview", "rejected")
 MAX_COMMENT_LENGTH = 10_000
 COMMENT_ORDERS = ("time", "relevance")
@@ -136,6 +150,38 @@ def normalize_publish_at(value: str) -> str:
     if utc <= datetime.now(timezone.utc):
         raise ValueError("publish_at must be in the future.")
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def status_flags(
+    *,
+    made_for_kids: Any = None,
+    embeddable: Any = None,
+    license: Any = None,
+    public_stats_viewable: Any = None,
+    contains_synthetic_media: Any = None,
+) -> dict[str, Any]:
+    """Validate the optional video status fields and map them to API names (only those given).
+
+    Booleans must be real booleans: the text "false" must never turn into True.
+    """
+    given = {
+        "selfDeclaredMadeForKids": ("made_for_kids", made_for_kids),
+        "embeddable": ("embeddable", embeddable),
+        "publicStatsViewable": ("public_stats_viewable", public_stats_viewable),
+        "containsSyntheticMedia": ("contains_synthetic_media", contains_synthetic_media),
+    }
+    result: dict[str, Any] = {}
+    for api_name, (arg_name, value) in given.items():
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise ValueError(f"{arg_name} must be true or false.")
+        result[api_name] = value
+    if license is not None:
+        if license not in VIDEO_LICENSES:
+            raise ValueError(f"license must be one of {', '.join(VIDEO_LICENSES)}.")
+        result["license"] = license
+    return result
 
 
 def build_multipart(
@@ -685,12 +731,24 @@ class YouTubeClient:
         default_language: str | None = None,
         privacy_status: str | None = None,
         publish_at: str | None = None,
+        made_for_kids: bool | None = None,
+        embeddable: bool | None = None,
+        license: str | None = None,
+        public_stats_viewable: bool | None = None,
+        contains_synthetic_media: bool | None = None,
     ) -> dict[str, Any]:
         """publish_at: ISO 8601 with offset schedules the video (forces private
         until then); an empty string removes an existing schedule."""
         scheduled = normalize_publish_at(publish_at) if publish_at else None
         if scheduled and privacy_status not in (None, "private"):
             raise ValueError("A scheduled video must be private until publish_at.")
+        flags = status_flags(
+            made_for_kids=made_for_kids,
+            embeddable=embeddable,
+            license=license,
+            public_stats_viewable=public_stats_viewable,
+            contains_synthetic_media=contains_synthetic_media,
+        )
         existing = self.get_video(video_id)
         before = copy.deepcopy({"snippet": existing["snippet"], "status": existing["status"]})
         snippet = existing["snippet"]
@@ -707,6 +765,7 @@ class YouTubeClient:
             snippet["defaultLanguage"] = default_language
         if privacy_status is not None:
             status["privacyStatus"] = privacy_status
+        status.update(flags)
         if scheduled:
             status["privacyStatus"] = "private"
             status["publishAt"] = scheduled
@@ -753,10 +812,22 @@ class YouTubeClient:
         privacy_status: str = "private",
         made_for_kids: bool = False,
         publish_at: str | None = None,
+        embeddable: bool | None = None,
+        license: str | None = None,
+        public_stats_viewable: bool | None = None,
+        contains_synthetic_media: bool | None = None,
     ) -> dict[str, Any]:
         scheduled = normalize_publish_at(publish_at) if publish_at else None
         if scheduled and privacy_status != "private":
             raise ValueError("A scheduled video must be private until publish_at.")
+        if not isinstance(made_for_kids, bool):
+            raise ValueError("made_for_kids must be true or false.")
+        flags = status_flags(
+            embeddable=embeddable,
+            license=license,
+            public_stats_viewable=public_stats_viewable,
+            contains_synthetic_media=contains_synthetic_media,
+        )
         path = abs_path(file_path)
         if not path.is_file():
             raise RuntimeError(f"Video file not found: {path}")
@@ -786,6 +857,7 @@ class YouTubeClient:
                 "selfDeclaredMadeForKids": made_for_kids,
             },
         }
+        metadata["status"].update(flags)
         if scheduled:
             metadata["status"]["publishAt"] = scheduled
         if self._plan is not None:
@@ -1517,6 +1589,7 @@ class McpServer:
                         "category_id": {"type": "string"},
                         "default_language": {"type": "string"},
                         "privacy_status": {"type": "string"},
+                        **VIDEO_FLAG_SCHEMA,
                         "publish_at": {
                             "type": "string",
                             "description": (
@@ -1548,6 +1621,7 @@ class McpServer:
                         "default_language": {"type": "string", "description": "For example 'de'."},
                         "privacy_status": {"type": "string", "enum": list(PRIVACY_STATUSES)},
                         "made_for_kids": {"type": "boolean", "description": "Default false."},
+                        **{k: v for k, v in VIDEO_FLAG_SCHEMA.items() if k != "made_for_kids"},
                         "publish_at": {
                             "type": "string",
                             "description": (
@@ -2039,6 +2113,11 @@ class McpServer:
                 default_language=arguments.get("default_language"),
                 privacy_status=arguments.get("privacy_status"),
                 publish_at=arguments.get("publish_at"),
+                made_for_kids=arguments.get("made_for_kids"),
+                embeddable=arguments.get("embeddable"),
+                license=arguments.get("license"),
+                public_stats_viewable=arguments.get("public_stats_viewable"),
+                contains_synthetic_media=arguments.get("contains_synthetic_media"),
             )
         if name == "youtube_upload_video":
             return self.youtube.upload_video(
@@ -2049,8 +2128,12 @@ class McpServer:
                 category_id=arguments.get("category_id", "22"),
                 default_language=arguments.get("default_language"),
                 privacy_status=arguments.get("privacy_status", "private"),
-                made_for_kids=bool(arguments.get("made_for_kids", False)),
+                made_for_kids=arguments.get("made_for_kids", False),
                 publish_at=arguments.get("publish_at"),
+                embeddable=arguments.get("embeddable"),
+                license=arguments.get("license"),
+                public_stats_viewable=arguments.get("public_stats_viewable"),
+                contains_synthetic_media=arguments.get("contains_synthetic_media"),
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
