@@ -22,6 +22,7 @@ EXPECTED_TOOLS = {
     "youtube_upload_video",
     "youtube_delete_video",
     "youtube_get_videos",
+    "youtube_list_categories",
     "youtube_upload_thumbnail",
     "youtube_quota_status",
     "youtube_analytics_query",

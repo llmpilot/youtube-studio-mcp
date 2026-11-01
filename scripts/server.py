@@ -50,6 +50,7 @@ VIDEO_FLAG_SCHEMA = {
     },
 }
 VIDEO_PARTS = ("snippet", "statistics", "status", "contentDetails")
+REGION_RE = re.compile(r"^[A-Za-z]{2}$")
 MAX_VIDEO_IDS = 50
 MODERATION_STATUSES = ("published", "heldForReview", "rejected")
 MAX_COMMENT_LENGTH = 10_000
@@ -69,6 +70,7 @@ _TOOL_HINTS = {
     "youtube_channel_overview": ("Channel overview", True, False, True, True),
     "youtube_list_videos": ("List videos", True, False, True, True),
     "youtube_get_video": ("Get video", True, False, True, True),
+    "youtube_list_categories": ("List video categories", True, False, True, True),
     "youtube_get_videos": ("Get several videos", True, False, True, True),
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_delete_video": ("Delete video", False, True, True, True),
@@ -723,6 +725,33 @@ class YouTubeClient:
         if not items:
             raise RuntimeError(f"Video {video_id} not found.")
         return items[0]
+
+    def list_categories(
+        self, region_code: str = "DE", language: str = "de", assignable_only: bool = True
+    ) -> dict[str, Any]:
+        """Video categories of a region; the ids are what category_id expects."""
+        if not isinstance(region_code, str) or not REGION_RE.match(region_code):
+            raise ValueError("region_code must be a two-letter country code such as DE.")
+        if not isinstance(language, str) or not LANGUAGE_RE.match(language):
+            raise ValueError("language must be a BCP-47 code such as 'de' or 'en-US'.")
+        if not isinstance(assignable_only, bool):
+            raise ValueError("assignable_only must be true or false.")
+        result = self._request(
+            YOUTUBE_API_BASE,
+            "/videoCategories",
+            query={"part": "snippet", "regionCode": region_code.upper(), "hl": language},
+        )
+        categories = [
+            {
+                "id": item["id"],
+                "title": item.get("snippet", {}).get("title"),
+                "assignable": bool(item.get("snippet", {}).get("assignable")),
+            }
+            for item in result.get("items", [])
+        ]
+        if assignable_only:
+            categories = [c for c in categories if c["assignable"]]
+        return {"region": region_code.upper(), "language": language, "categories": categories}
 
     def get_videos(self, video_ids: Any, parts: Any = None) -> dict[str, Any]:
         """Several videos in one call (1 quota unit). Order follows the request; unknown ids are listed."""
@@ -1635,6 +1664,23 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_list_categories",
+                "description": (
+                    "List the video categories of a region with their ids (use the id as category_id in "
+                    "youtube_update_video / youtube_upload_video). Titles come in the requested language. "
+                    "By default only categories you can assign to a video. Costs 1 quota unit."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "region_code": {"type": "string", "description": "Two-letter country code. Default DE."},
+                        "language": {"type": "string", "description": "BCP-47 code for the titles. Default de."},
+                        "assignable_only": {"type": "boolean", "description": "Default true."},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_get_videos",
                 "description": (
                     "Fetch up to 50 videos in ONE call (1 quota unit) instead of one call per video. "
@@ -2200,6 +2246,12 @@ class McpServer:
             )
         if name == "youtube_get_video":
             return self.youtube.get_video(arguments["video_id"])
+        if name == "youtube_list_categories":
+            return self.youtube.list_categories(
+                arguments.get("region_code", "DE"),
+                arguments.get("language", "de"),
+                arguments.get("assignable_only", True),
+            )
         if name == "youtube_get_videos":
             return self.youtube.get_videos(arguments["video_ids"], arguments.get("parts"))
         if name == "youtube_update_video":
