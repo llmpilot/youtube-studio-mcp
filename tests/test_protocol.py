@@ -21,6 +21,8 @@ EXPECTED_TOOLS = {
     "youtube_update_video",
     "youtube_upload_video",
     "youtube_upload_thumbnail",
+    "youtube_list_playlists",
+    "youtube_list_playlist_items",
     "youtube_list_captions",
     "youtube_upload_caption",
     "youtube_update_caption",

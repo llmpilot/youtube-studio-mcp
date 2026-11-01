@@ -12,6 +12,8 @@ The server exposes these MCP tools.
 | `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. |
 | `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it. Costs 1,600 quota units. |
 | `youtube_upload_thumbnail` | Upload a local image as a custom thumbnail. |
+| `youtube_list_playlists` | List your playlists with privacy and item count (1 quota unit). |
+| `youtube_list_playlist_items` | List a playlist's videos in order, with item ids and positions (1 unit). |
 | `youtube_list_captions` | List a video's caption tracks (50 quota units). |
 | `youtube_upload_caption` | Add a caption track from a local .srt/.vtt file (language, name, draft; 400 units). |
 | `youtube_update_caption` | Replace a track's content and/or draft status (450 units). |
@@ -46,7 +48,7 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 
 | Hint | Tools |
 | --- | --- |
-| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
 | `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail`, `youtube_update_caption`, `youtube_delete_caption` |
 | additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_download_caption` (may write a local file) |
 

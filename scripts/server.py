@@ -46,6 +46,8 @@ _TOOL_HINTS = {
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
+    "youtube_list_playlists": ("List playlists", True, False, True, True),
+    "youtube_list_playlist_items": ("List playlist items", True, False, True, True),
     "youtube_list_captions": ("List captions", True, False, True, True),
     "youtube_upload_caption": ("Upload caption", False, False, False, True),
     "youtube_update_caption": ("Update caption", False, True, True, True),
@@ -585,6 +587,34 @@ class YouTubeClient:
                     continue
                 raise RuntimeError(f"Unexpected upload response status {status}.")
 
+    def list_playlists(
+        self, max_results: int = 25, page_token: str | None = None
+    ) -> dict[str, Any]:
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlists",
+            query={
+                "part": "snippet,status,contentDetails",
+                "mine": "true",
+                "maxResults": max(1, min(max_results, 50)),
+                "pageToken": page_token,
+            },
+        )
+
+    def list_playlist_items(
+        self, playlist_id: str, max_results: int = 50, page_token: str | None = None
+    ) -> dict[str, Any]:
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlistItems",
+            query={
+                "part": "snippet,contentDetails,status",
+                "playlistId": playlist_id,
+                "maxResults": max(1, min(max_results, 50)),
+                "pageToken": page_token,
+            },
+        )
+
     def list_captions(self, video_id: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
@@ -882,6 +912,32 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_list_playlists",
+                "description": "List your channel's playlists (title, privacy, item count). Costs 1 quota unit.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "page_token": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_list_playlist_items",
+                "description": "List the videos in a playlist in order, with item ids and positions. Costs 1 quota unit.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "playlist_id": {"type": "string"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "page_token": {"type": "string"},
+                    },
+                    "required": ["playlist_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_list_captions",
                 "description": "List the caption tracks of a video (id, language, name, draft status). Costs 50 quota units.",
                 "inputSchema": {
@@ -1077,6 +1133,16 @@ class McpServer:
             )
         if name == "youtube_upload_thumbnail":
             return self.youtube.upload_thumbnail(arguments["video_id"], arguments["image_path"])
+        if name == "youtube_list_playlists":
+            return self.youtube.list_playlists(
+                int(arguments.get("max_results", 25)), arguments.get("page_token")
+            )
+        if name == "youtube_list_playlist_items":
+            return self.youtube.list_playlist_items(
+                arguments["playlist_id"],
+                int(arguments.get("max_results", 50)),
+                arguments.get("page_token"),
+            )
         if name == "youtube_list_captions":
             return self.youtube.list_captions(arguments["video_id"])
         if name == "youtube_upload_caption":
