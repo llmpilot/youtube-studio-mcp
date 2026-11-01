@@ -18,6 +18,7 @@ READ_ONLY = {
     "youtube_list_replies",
     "youtube_list_channel_comments",
     "youtube_analytics_query",
+    "youtube_get_videos",
 }
 WRITES = {
     "youtube_delete_video",

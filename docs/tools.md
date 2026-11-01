@@ -9,6 +9,7 @@ The server exposes these MCP tools.
 | `youtube_channel_overview` | Fetch channel profile, branding, uploads playlist, and public statistics. |
 | `youtube_list_videos` | List recent uploads with metadata, status, statistics, and pagination. |
 | `youtube_get_video` | Fetch metadata for a single video. |
+| `youtube_get_videos` | Fetch up to 50 videos in one call (1 quota unit); `parts` limits the data. Keeps the request order and lists unknown ids in `not_found`. |
 | `youtube_update_video` | Update title, description, tags, category, default language, or privacy status. `publish_at` (ISO 8601 with UTC offset) schedules publication; `""` removes a schedule. Also `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. |
 | `youtube_upload_video` | Upload a local video file (resumable, 8 MiB chunks, retries). Default visibility `private`; optional `publish_at` schedules it; optional `made_for_kids`, `embeddable`, `license`, `public_stats_viewable`, `contains_synthetic_media`. Costs 1,600 quota units. |
 | `youtube_delete_video` | Permanently delete a video (comments, statistics and captions go with it). Needs `confirm_title` equal to the current title; use `dry_run` first to see title, views and visibility (51 quota units). |
@@ -61,7 +62,7 @@ Every tool carries MCP annotations so clients can auto-allow reads and confirm w
 
 | Hint | Tools |
 | --- | --- |
-| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_channel_comments`, `youtube_analytics_query`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
+| `readOnlyHint: true` | `youtube_auth_status`, `youtube_start_auth`, `youtube_channel_overview`, `youtube_list_videos`, `youtube_get_video`, `youtube_get_videos`, `youtube_list_captions`, `youtube_list_replies`, `youtube_list_channel_comments`, `youtube_analytics_query`, `youtube_list_playlists`, `youtube_list_playlist_items`, `youtube_channel_analytics`, `youtube_video_analytics`, `youtube_list_comments` |
 | `destructiveHint: true` (overwrites existing data) | `youtube_update_video`, `youtube_upload_thumbnail`, `youtube_update_caption`, `youtube_delete_caption`, `youtube_update_playlist`, `youtube_delete_playlist` |
 | additive writes (`destructiveHint: false`, not idempotent) | `youtube_upload_video`, `youtube_post_comment`, `youtube_upload_caption`, `youtube_create_playlist`, `youtube_reply_to_comment`, `youtube_add_playlist_item`, `youtube_move_playlist_item`, `youtube_download_caption` (may write a local file) |
 

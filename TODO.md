@@ -17,7 +17,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 - [x] **Geplante Veröffentlichung** – `publishAt` in `youtube_update_video` und beim Upload (Zeitzone, nur mit `private`) (`feat: add scheduled publishing`)
 - [x] **Weitere Video-Felder** – `madeForKids`, `embeddable`, `license`, `publicStatsViewable`, `containsSyntheticMedia` (`feat: expose more video status fields`)
 - [x] **Video löschen** – `youtube_delete_video`, nur mit Bestätigungsparameter (`feat: add video delete`)
-- [ ] **Mehrere Videos abrufen** – `youtube_get_videos` mit ID-Liste (bis 50, ein API-Aufruf) (`feat: batch video lookup`)
+- [x] **Mehrere Videos abrufen** – `youtube_get_videos` mit ID-Liste (bis 50, ein API-Aufruf) (`feat: batch video lookup`)
 - [ ] **Lokalisierungen** – Titel und Beschreibung in weiteren Sprachen (`localizations`) lesen und setzen (`feat: add video localizations`)
 - [ ] **Kategorien** – `youtube_list_categories` je Region (`feat: list video categories`)
 

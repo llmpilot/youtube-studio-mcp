@@ -49,6 +49,8 @@ VIDEO_FLAG_SCHEMA = {
         "description": "Disclose realistic altered or synthetic (AI-generated) content.",
     },
 }
+VIDEO_PARTS = ("snippet", "statistics", "status", "contentDetails")
+MAX_VIDEO_IDS = 50
 MODERATION_STATUSES = ("published", "heldForReview", "rejected")
 MAX_COMMENT_LENGTH = 10_000
 COMMENT_ORDERS = ("time", "relevance")
@@ -67,6 +69,7 @@ _TOOL_HINTS = {
     "youtube_channel_overview": ("Channel overview", True, False, True, True),
     "youtube_list_videos": ("List videos", True, False, True, True),
     "youtube_get_video": ("Get video", True, False, True, True),
+    "youtube_get_videos": ("Get several videos", True, False, True, True),
     "youtube_update_video": ("Update video metadata", False, True, True, True),
     "youtube_delete_video": ("Delete video", False, True, True, True),
     "youtube_upload_video": ("Upload video", False, False, False, True),
@@ -720,6 +723,36 @@ class YouTubeClient:
         if not items:
             raise RuntimeError(f"Video {video_id} not found.")
         return items[0]
+
+    def get_videos(self, video_ids: Any, parts: Any = None) -> dict[str, Any]:
+        """Several videos in one call (1 quota unit). Order follows the request; unknown ids are listed."""
+        if isinstance(video_ids, str):
+            video_ids = [part.strip() for part in video_ids.split(",")]
+        if not isinstance(video_ids, list) or not all(isinstance(v, str) for v in video_ids):
+            raise ValueError("video_ids must be a list of video ids.")
+        ids = list(dict.fromkeys(v.strip() for v in video_ids if v.strip()))  # de-duplicated, ordered
+        if not ids:
+            raise ValueError("video_ids must not be empty.")
+        if len(ids) > MAX_VIDEO_IDS:
+            raise ValueError(f"At most {MAX_VIDEO_IDS} videos per call.")
+        if any("," in v or any(c.isspace() for c in v) for v in ids):
+            raise ValueError("Video ids must not contain commas or spaces.")
+        if parts is None:
+            wanted = list(VIDEO_PARTS)
+        else:
+            wanted = [parts] if isinstance(parts, str) else parts
+            if not isinstance(wanted, list) or not wanted or any(w not in VIDEO_PARTS for w in wanted):
+                raise ValueError(f"parts must be a non-empty list from {', '.join(VIDEO_PARTS)}.")
+        result = self._request(
+            YOUTUBE_API_BASE,
+            "/videos",
+            query={"part": ",".join(dict.fromkeys(wanted)), "id": ",".join(ids)},
+        )
+        found = {item["id"]: item for item in result.get("items", [])}
+        return {
+            "items": [found[i] for i in ids if i in found],
+            "not_found": [i for i in ids if i not in found],
+        }
 
     def update_video(
         self,
@@ -1602,6 +1635,27 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_get_videos",
+                "description": (
+                    "Fetch up to 50 videos in ONE call (1 quota unit) instead of one call per video. "
+                    "Results keep the order of video_ids; ids that do not exist or are not visible to you "
+                    "are listed in not_found. Use 'parts' to limit the data, for example ['statistics']."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "video_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 50},
+                        "parts": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": list(VIDEO_PARTS)},
+                            "description": "Default: all four.",
+                        },
+                    },
+                    "required": ["video_ids"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_update_video",
                 "description": "Update title, description, tags, category, language, or privacy status.",
                 "inputSchema": {
@@ -2146,6 +2200,8 @@ class McpServer:
             )
         if name == "youtube_get_video":
             return self.youtube.get_video(arguments["video_id"])
+        if name == "youtube_get_videos":
+            return self.youtube.get_videos(arguments["video_ids"], arguments.get("parts"))
         if name == "youtube_update_video":
             return self.youtube.update_video(
                 arguments["video_id"],
