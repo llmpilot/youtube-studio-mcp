@@ -28,7 +28,7 @@ Stand: 0.1.0 plus Fix für zeilenweises JSON (stdio).
 ## Playlists
 
 - [x] **Playlists lesen** – `youtube_list_playlists`, `youtube_list_playlist_items` (`feat: list playlists`)
-- [ ] **Playlists schreiben** – anlegen, Titel/Beschreibung/Sichtbarkeit ändern, löschen (`feat: manage playlists`)
+- [x] **Playlists schreiben** – anlegen, Titel/Beschreibung/Sichtbarkeit ändern, löschen (`feat: manage playlists`)
 - [ ] **Playlist-Einträge** – Video hinzufügen, entfernen, Reihenfolge ändern (`feat: manage playlist items`)
 
 ## Kommentare

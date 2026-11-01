@@ -48,6 +48,9 @@ _TOOL_HINTS = {
     "youtube_upload_thumbnail": ("Upload thumbnail", False, True, True, True),
     "youtube_list_playlists": ("List playlists", True, False, True, True),
     "youtube_list_playlist_items": ("List playlist items", True, False, True, True),
+    "youtube_create_playlist": ("Create playlist", False, False, False, True),
+    "youtube_update_playlist": ("Update playlist", False, True, True, True),
+    "youtube_delete_playlist": ("Delete playlist", False, True, True, True),
     "youtube_list_captions": ("List captions", True, False, True, True),
     "youtube_upload_caption": ("Upload caption", False, False, False, True),
     "youtube_update_caption": ("Update caption", False, True, True, True),
@@ -615,6 +618,82 @@ class YouTubeClient:
             },
         )
 
+    @staticmethod
+    def _check_playlist_fields(title: str | None, privacy_status: str | None) -> None:
+        if title is not None and (not title.strip() or len(title) > 150):
+            raise ValueError("title must be 1-150 characters.")
+        if privacy_status is not None and privacy_status not in PRIVACY_STATUSES:
+            raise ValueError(f"privacy_status must be one of {', '.join(PRIVACY_STATUSES)}.")
+
+    def get_playlist(self, playlist_id: str) -> dict[str, Any]:
+        result = self._request(
+            YOUTUBE_API_BASE, "/playlists", query={"part": "snippet,status", "id": playlist_id}
+        )
+        items = result.get("items", [])
+        if not items:
+            raise RuntimeError(f"Playlist {playlist_id} not found.")
+        return items[0]
+
+    def create_playlist(
+        self,
+        title: str,
+        *,
+        description: str = "",
+        privacy_status: str = "private",
+        default_language: str | None = None,
+    ) -> dict[str, Any]:
+        self._check_playlist_fields(title, privacy_status)
+        snippet: dict[str, Any] = {"title": title, "description": description}
+        if default_language:
+            snippet["defaultLanguage"] = default_language
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlists",
+            method="POST",
+            query={"part": "snippet,status"},
+            body={"snippet": snippet, "status": {"privacyStatus": privacy_status}},
+        )
+
+    def update_playlist(
+        self,
+        playlist_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        privacy_status: str | None = None,
+        default_language: str | None = None,
+    ) -> dict[str, Any]:
+        if all(v is None for v in (title, description, privacy_status, default_language)):
+            raise ValueError("Give at least one field to change.")
+        self._check_playlist_fields(title, privacy_status)
+        existing = self.get_playlist(playlist_id)
+        old = existing["snippet"]
+        snippet: dict[str, Any] = {
+            "title": title if title is not None else old.get("title", ""),
+            "description": description if description is not None else old.get("description", ""),
+        }
+        language = default_language if default_language is not None else old.get("defaultLanguage")
+        if language:
+            snippet["defaultLanguage"] = language
+        if old.get("tags"):
+            snippet["tags"] = old["tags"]
+        status = {
+            "privacyStatus": privacy_status
+            if privacy_status is not None
+            else existing.get("status", {}).get("privacyStatus", "private")
+        }
+        return self._request(
+            YOUTUBE_API_BASE,
+            "/playlists",
+            method="PUT",
+            query={"part": "snippet,status"},
+            body={"id": playlist_id, "snippet": snippet, "status": status},
+        )
+
+    def delete_playlist(self, playlist_id: str) -> dict[str, Any]:
+        self._request(YOUTUBE_API_BASE, "/playlists", method="DELETE", query={"id": playlist_id})
+        return {"deleted": playlist_id}
+
     def list_captions(self, video_id: str) -> dict[str, Any]:
         return self._request(
             YOUTUBE_API_BASE, "/captions", query={"part": "snippet", "videoId": video_id}
@@ -938,6 +1017,47 @@ class McpServer:
                 },
             },
             {
+                "name": "youtube_create_playlist",
+                "description": "Create a playlist (default privacy 'private'). Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "maxLength": 150},
+                        "description": {"type": "string"},
+                        "privacy_status": {"type": "string", "enum": list(PRIVACY_STATUSES)},
+                        "default_language": {"type": "string", "description": "For example 'de'."},
+                    },
+                    "required": ["title"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_update_playlist",
+                "description": "Change a playlist's title, description, language or privacy. Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "playlist_id": {"type": "string"},
+                        "title": {"type": "string", "maxLength": 150},
+                        "description": {"type": "string"},
+                        "privacy_status": {"type": "string", "enum": list(PRIVACY_STATUSES)},
+                        "default_language": {"type": "string"},
+                    },
+                    "required": ["playlist_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "youtube_delete_playlist",
+                "description": "Permanently delete a playlist (its videos stay on the channel). Costs 50 quota units.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"playlist_id": {"type": "string"}},
+                    "required": ["playlist_id"],
+                    "additionalProperties": False,
+                },
+            },
+            {
                 "name": "youtube_list_captions",
                 "description": "List the caption tracks of a video (id, language, name, draft status). Costs 50 quota units.",
                 "inputSchema": {
@@ -1143,6 +1263,23 @@ class McpServer:
                 int(arguments.get("max_results", 50)),
                 arguments.get("page_token"),
             )
+        if name == "youtube_create_playlist":
+            return self.youtube.create_playlist(
+                arguments["title"],
+                description=arguments.get("description", ""),
+                privacy_status=arguments.get("privacy_status", "private"),
+                default_language=arguments.get("default_language"),
+            )
+        if name == "youtube_update_playlist":
+            return self.youtube.update_playlist(
+                arguments["playlist_id"],
+                title=arguments.get("title"),
+                description=arguments.get("description"),
+                privacy_status=arguments.get("privacy_status"),
+                default_language=arguments.get("default_language"),
+            )
+        if name == "youtube_delete_playlist":
+            return self.youtube.delete_playlist(arguments["playlist_id"])
         if name == "youtube_list_captions":
             return self.youtube.list_captions(arguments["video_id"])
         if name == "youtube_upload_caption":
